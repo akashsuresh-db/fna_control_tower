@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #0D1117;
+  --color-bg-panel: #0a1628;
+  --color-bg-card: #111d2e;
+  --color-bg-hover: #162236;
+  --color-border-subtle: #1e3050;
+  --color-border-glow: #1e4070;
+  --color-db-red: #FF3621;
+  --color-db-amber: #FF7033;
+  --color-db-green: #22C55E;
+  --color-db-blue: #3B82F6;
+  --color-db-navy: #003159;
+  --color-text-primary: #E6EDF3;
+  --color-text-secondary: #8B949E;
+  --color-text-muted: #6B7280;
+}
+
+body {
+  margin: 0;
+  background-color: #0D1117;
+  color: #E6EDF3;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0D1117; }
+::-webkit-scrollbar-thumb { background: #1e3050; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2e4070; }
+
+/* Glass morphism card */
+.glass-card {
+  background: linear-gradient(135deg, rgba(17, 29, 46, 0.8), rgba(10, 22, 40, 0.6));
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 48, 80, 0.5);
+  border-radius: 12px;
+}
+
+.glass-card-glow {
+  background: linear-gradient(135deg, rgba(17, 29, 46, 0.9), rgba(10, 22, 40, 0.7));
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 64, 112, 0.6);
+  border-radius: 12px;
+  box-shadow: 0 0 20px rgba(30, 64, 112, 0.15);
+}
+
+/* Exception flash */
+@keyframes redFlash {
+  0%, 100% { border-color: rgba(255, 54, 33, 0.3); }
+  50% { border-color: rgba(255, 54, 33, 0.8); box-shadow: 0 0 20px rgba(255, 54, 33, 0.3); }
+}
+.exception-flash {
+  animation: redFlash 1s ease-in-out 2;
+}
+
+/* Green success flash */
+@keyframes greenFlash {
+  0% { background-color: rgba(34, 197, 94, 0.15); }
+  100% { background-color: transparent; }
+}
+.match-success {
+  animation: greenFlash 1s ease-out;
+}
+
+/* Pulse for live indicators */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.live-pulse {
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+/* Typing indicator */
+@keyframes dotBounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+.typing-dot { animation: dotBounce 1.4s ease-in-out infinite; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
