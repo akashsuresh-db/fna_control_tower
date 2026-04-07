@@ -128,6 +128,17 @@ export default function APTab({ userName = "User", onNotify }: Props) {
         )}
       </div>
 
+      {/* Error Alert */}
+      {stream.error && (
+        <div className="px-4 py-3 rounded-lg bg-db-red/10 border border-db-red/30 flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-db-red flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm text-db-red font-medium">Stream Error</p>
+            <p className="text-xs text-text-secondary mt-0.5">{stream.error}</p>
+          </div>
+        </div>
+      )}
+
       {/* Greeting */}
       <GreetingBanner greeting={stream.greeting} isStreaming={stream.isStreaming} userName={userName} />
 
