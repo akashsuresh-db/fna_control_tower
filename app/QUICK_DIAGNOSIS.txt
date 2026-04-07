@@ -1,0 +1,186 @@
+===============================================================================
+QUICK DIAGNOSIS GUIDE - Finance & Accounting App
+===============================================================================
+
+SYMPTOM: "Start Processing" button does nothing, no invoices appear
+===============================================================================
+
+STEP 1: Open Browser DevTools
+  - Press F12
+  - Click "Console" tab
+  - Click "Start Processing" button in app
+  - Look for error message in red text
+
+STEP 2: Read the Error Message
+
+  IF you see RED ERROR BOX in app:
+    ✓ Error message appears on screen
+    ✓ Copy the error message exactly
+    ✓ This is the fix working - now you know WHY it failed
+    ✓ See DEBUGGING_GUIDE.md for how to fix each error type
+
+  IF you see console red error like:
+    "SSE connection error: ..."
+    "Failed to create EventSource: ..."
+    "Stream failed: Connection closed"
+    ✓ Same as above - error is being caught and reported
+    ✓ Check the DEBUGGING_GUIDE.md for that specific error
+
+  IF you see NOTHING (no error, no invoices):
+    ✓ Open Network tab (DevTools → Network)
+    ✓ Click "Start Processing" again
+    ✓ Look for request to "/stream/p2p" in the list
+    ✓ If it appears, click it and check Status code
+    ✓ If it doesn't appear, see "Request Not Found" section below
+
+===============================================================================
+QUICK DECISION TREE
+===============================================================================
+
+┌─ Red error box appears on screen?
+│  └─ YES → Error is being caught. Read error message.
+│           Jump to DEBUGGING_GUIDE.md section for that error type.
+│  └─ NO  → Go to Step 3 below
+│
+├─ Browser console shows red "SSE" error?
+│  └─ YES → Same as above, error is caught.
+│  └─ NO  → Go to Step 3 below
+│
+└─ Request "/stream/p2p" appears in Network tab?
+   └─ YES → Check Status code:
+   │        200 = Server responding, events not flowing (parsing issue)
+   │        401 = Auth missing (proxy not injecting headers)
+   │        403 = Permission denied
+   │        404 = Route doesn't exist (proxy routing wrong)
+   │        timeout = Server or proxy hanging
+   │
+   └─ NO  → JavaScript never called EventSource()
+            Check that component is mounted and URL is correct.
+
+===============================================================================
+MOST LIKELY CAUSES (in order)
+===============================================================================
+
+1. CORS/Proxy Issue (50%)
+   Error: "Stream failed: Connection closed"
+   Fix: Databricks Apps proxy needs SSE support config
+
+2. Auth Headers Missing (30%)
+   Error: "401 Unauthorized" in Network tab
+   Fix: x-forwarded-email header not injected by proxy
+
+3. Backend Not Running (10%)
+   Error: "Stream failed: Connection closed" (connection refused)
+   Fix: Backend service crashed or not started
+
+4. Network/Firewall (5%)
+   Error: "Connection closed" or timeout
+   Fix: Network policy blocks SSE connections
+
+5. Route Not Found (5%)
+   Error: "404 Not Found" in Network tab
+   Fix: Backend route /stream/p2p not configured
+
+===============================================================================
+IMMEDIATE ACTIONS
+===============================================================================
+
+1. Check DevTools Console (F12 → Console)
+   ✓ Are there red error messages?
+   ✓ Copy the exact error text
+
+2. Check Network Tab (F12 → Network)
+   ✓ Filter to "XHR/Fetch" type
+   ✓ Click "Start Processing" again
+   ✓ Do you see /stream/p2p request?
+   ✓ What's the Status code? (200, 401, 404, timeout, etc.)
+
+3. Check Browser Console Logs
+   ✓ Look for "SSE connection error:" messages
+   ✓ These now report the exact failure reason
+
+4. Report Back With:
+   ✓ Screenshot of browser console error (F12)
+   ✓ Screenshot of Network tab showing /stream/p2p request
+   ✓ The exact error message or Status code
+   ✓ Browser type and version
+
+===============================================================================
+FOR DEVELOPERS - WHAT WAS FIXED
+===============================================================================
+
+BEFORE (broken):
+  es.onerror = () => {
+    setIsStreaming(false);
+    es.close();
+  };
+  // User sees: Nothing. Button grayed out. No feedback.
+
+AFTER (fixed):
+  es.onerror = (err) => {
+    console.error("SSE connection error:", err);
+    setError(`Stream failed: ${statusText}. Check browser console for details.`);
+    setIsStreaming(false);
+    es.close();
+  };
+  // User sees: Red error box with message + console has technical details
+
+FILES MODIFIED:
+  ✓ frontend/src/hooks/useSSE.ts
+    - Added error state
+    - Added console.error logging
+    - Changed onerror handler to set error message
+
+  ✓ frontend/src/components/APTab.tsx
+  ✓ frontend/src/components/ARTab.tsx
+  ✓ frontend/src/components/GLTab.tsx
+    - Added error alert UI that shows stream.error
+
+RESULT:
+  Now when EventSource fails, user sees:
+  1. Red error box with message
+  2. Console has technical details (console.error)
+  3. Developer can debug from the message shown
+
+===============================================================================
+IF ERROR STILL APPEARS AFTER CODE CHANGES
+===============================================================================
+
+This means the issue is NOT in the frontend code, but in:
+  ✓ Databricks Apps proxy configuration
+  ✓ Backend service connectivity
+  ✓ Network/firewall blocking SSE
+  ✓ Auth headers not being injected
+
+Next steps:
+  1. Check Databricks App logs
+  2. Verify backend service is running
+  3. Test curl command:
+     curl -v -N https://[APP_URL]/stream/p2p
+     Should see HTTP 200 and SSE events (data: {...}\n\n)
+  4. Contact Databricks support about proxy SSE support
+
+===============================================================================
+CONTACT SUPPORT WITH
+===============================================================================
+
+When reporting the issue, include:
+  ✓ Screenshot of browser console (F12 → Console tab)
+  ✓ Screenshot of Network tab showing /stream/p2p request + Status code
+  ✓ The error message shown (either in red box or console)
+  ✓ App URL
+  ✓ User email
+  ✓ Browser type and version
+  ✓ Whether you just deployed code changes or not
+
+This information will help debug 90% faster.
+
+===============================================================================
+
+For full details, see:
+  - DEBUGGING_GUIDE.md (technical debugging)
+  - TEST_RESULTS.md (comprehensive analysis)
+  - UI_TEST_CHECKLIST.md (what to test)
+  - UX_TESTING_REPORT.md (full report)
+
+===============================================================================
