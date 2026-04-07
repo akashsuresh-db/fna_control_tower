@@ -46,7 +46,7 @@ def _get_conn():
     return psycopg2.connect(
         host=os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST"),
         port=int(os.environ.get("PGPORT") or os.environ.get("LAKEBASE_PORT", "5432")),
-        database=os.environ.get("PGDATABASE") or os.environ.get("LAKEBASE_DATABASE", "finance_ops"),
+        database=os.environ.get("PGDATABASE") or os.environ.get("LAKEBASE_DATABASE", "postgres"),
         user=os.environ.get("PGUSER") or os.environ.get("LAKEBASE_USER"),
         password=_fresh_token(),
         sslmode=os.environ.get("PGSSLMODE", "require"),

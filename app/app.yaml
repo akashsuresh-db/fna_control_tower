@@ -1,21 +1,21 @@
 command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 env:
   - name: DATABRICKS_WAREHOUSE_ID
-    value: "148ccb90800933a1"
+    value: "4b9b953939869799"
   - name: GENIE_SPACE_ID
-    value: "01f122c95c741815919b6457017f0899"
+    value: ""
   - name: DATABRICKS_CATALOG
-    value: "akash_s_demo"
+    value: "akash_s"
   - name: DATABRICKS_SCHEMA
     value: "finance_and_accounting"
   - name: PGHOST
-    valueFrom: "finance-ops-lakebase:hostname"
+    value: "ep-mute-dew-d1b8fz0c.database.us-west-2.cloud.databricks.com"
   - name: PGUSER
-    valueFrom: "finance-ops-lakebase:username"
-  - name: PGPASSWORD
-    valueFrom: "finance-ops-lakebase:password"
+    value: "aba1ec33-e4db-47b2-9c51-60eef4a6603f"
   - name: PGDATABASE
-    valueFrom: "finance-ops-lakebase:database_name"
+    value: "postgres"
+  - name: PGPORT
+    value: "5432"
   - name: PGSSLMODE
     value: "require"
   - name: LAKEBASE_INSTANCE_NAME
@@ -23,17 +23,13 @@ env:
 resources:
   - name: sql-warehouse
     sql_warehouse:
-      id: "148ccb90800933a1"
+      id: "4b9b953939869799"
       permission: CAN_USE
   - name: claude-endpoint
     serving_endpoint:
       name: "databricks-claude-sonnet-4-5"
       permission: CAN_QUERY
-  - name: mas-finance-agent
-    serving_endpoint:
-      name: "mas-6f799597-endpoint"
-      permission: CAN_QUERY
-  - name: finance-ops-lakebase
-    database:
-      id: "ff6c333c-a93f-4e81-95da-cfbcaeee90e6"
-      permission: CAN_CONNECT
+  - name: finance-ops-db
+    database_instance:
+      name: "finance-ops-db"
+      permission: CAN_USE
