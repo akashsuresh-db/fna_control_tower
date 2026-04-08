@@ -29,6 +29,10 @@ resources:
     serving_endpoint:
       name: "databricks-claude-sonnet-4-5"
       permission: CAN_QUERY
+  - name: mas-supervisor
+    serving_endpoint:
+      name: "mas-3744e932-endpoint"
+      permission: CAN_QUERY
   - name: finance-ops-db
     database_instance:
       name: "finance-ops-db"
