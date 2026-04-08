@@ -129,11 +129,17 @@ export default function App() {
 
       {/* Content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Main panel */}
+        {/* Main panel — all tabs stay mounted so pipeline state is preserved when switching */}
         <main className="flex-1 overflow-y-auto p-4">
-          {activeTab === "AP Operations" && <APTab userName={userName} onNotify={setNotification} />}
-          {activeTab === "AR Operations" && <ARTab userName={userName} onNotify={setNotification} />}
-          {activeTab === "GL Operations" && <GLTab userName={userName} />}
+          <div style={{ display: activeTab === "AP Operations" ? "contents" : "none" }}>
+            <APTab userName={userName} onNotify={setNotification} />
+          </div>
+          <div style={{ display: activeTab === "AR Operations" ? "contents" : "none" }}>
+            <ARTab userName={userName} onNotify={setNotification} />
+          </div>
+          <div style={{ display: activeTab === "GL Operations" ? "contents" : "none" }}>
+            <GLTab userName={userName} />
+          </div>
         </main>
 
         {/* AI Chat sidebar */}
