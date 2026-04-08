@@ -1,8 +1,13 @@
 """Finance AI Chat — routed through the MAS supervisor agent endpoint.
 
-The supervisor (mas-3744e932-endpoint) routes every question to the
-Finance & Accounting Genie Space and answers with full SQL + data context.
-Conversation history is replayed as messages on each turn.
+The supervisor (mas-3744e932-endpoint) uses the Responses API format:
+  - Request:  { "input": [{role, content}], "max_tokens": N }
+  - Response: { "output": [ {type, role, content: [{type, text}]} ] }
+
+The final answer is in the last "message" output item. Intermediate items
+contain the Genie tool call and raw table data — we surface the final
+formatted answer which includes the cleaned-up markdown table + insights.
+
 Session history is persisted to Lakebase (falls back to in-memory).
 """
 import json
@@ -10,10 +15,8 @@ import aiohttp
 from backend.config import get_workspace_host, get_token
 
 MAS_ENDPOINT = "mas-3744e932-endpoint"
-
-# Keep AGENT_ENDPOINT / FMAPI_MODEL for backwards-compat with main.py import
-AGENT_ENDPOINT = MAS_ENDPOINT
-FMAPI_MODEL = MAS_ENDPOINT
+AGENT_ENDPOINT = MAS_ENDPOINT  # backwards-compat
+FMAPI_MODEL = MAS_ENDPOINT     # backwards-compat
 
 
 def _token(user_token: str | None = None) -> str:
@@ -25,25 +28,64 @@ def _token(user_token: str | None = None) -> str:
     return ""
 
 
+def _extract_answer(output: list) -> str:
+    """
+    Extract the final formatted answer from the MAS output array.
+
+    The output array looks like:
+      [0] message  — "I'll query the system..."
+      [1] function_call — Genie tool call
+      [2] message  — raw <name> routing tag (skip)
+      [3] message  — raw Genie SQL result table (skip)
+      [4] message  — raw <name> routing tag (skip)
+      [5] message  — final formatted answer  ← this is what we want
+
+    Strategy: take the LAST message item whose text is NOT just a <name> tag.
+    """
+    candidates = []
+    for item in output:
+        if item.get("type") != "message":
+            continue
+        for c in item.get("content", []):
+            text = c.get("text", "").strip()
+            if not text:
+                continue
+            # Skip bare routing tags like <name>...</name>
+            if text.startswith("<name>") and text.endswith("</name>"):
+                continue
+            candidates.append(text)
+
+    if not candidates:
+        return ""
+
+    # The last candidate is the final formatted answer
+    return candidates[-1]
+
+
 async def stream_mas_agent(
     messages: list[dict],
     user_token: str | None = None,
     previous_response_id: str | None = None,
 ):
-    """Stream response from the MAS supervisor endpoint, yielding tokens.
+    """
+    Call the MAS supervisor and yield the answer as streaming chunks.
+
+    The MAS endpoint does not support SSE streaming, so we call it once
+    and yield the answer in ~50-char chunks to keep the streaming UX.
 
     Yields dicts:
       {"type": "chunk",  "text": "..."}
       {"type": "done",   "response_id": None, "tool": None}
       {"type": "error",  "message": "..."}
     """
+    import asyncio
+
     token = _token(user_token)
     host = get_workspace_host()
     url = f"{host}/serving-endpoints/{MAS_ENDPOINT}/invocations"
 
     payload = {
-        "messages": list(messages),
-        "stream": True,
+        "input": list(messages),
         "max_tokens": 2048,
     }
     headers = {
@@ -64,28 +106,21 @@ async def stream_mas_agent(
                     yield {"type": "error", "message": f"HTTP {resp.status}: {error_text[:300]}"}
                     return
 
-                async for line_bytes in resp.content:
-                    line = line_bytes.decode("utf-8").strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        # Handle both chat-completions SSE and responses API formats
-                        delta = (
-                            chunk.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content", "")
-                        )
-                        if not delta:
-                            # responses API format
-                            delta = chunk.get("delta", {}).get("text", "") or chunk.get("text", "")
-                        if delta:
-                            yield {"type": "chunk", "text": delta}
-                    except json.JSONDecodeError:
-                        pass
+                body = await resp.text()
+
+        d = json.loads(body)
+        output = d.get("output", [])
+        answer = _extract_answer(output)
+
+        if not answer:
+            yield {"type": "error", "message": "No answer returned from supervisor."}
+            return
+
+        # Stream the answer in chunks to preserve the typing-effect UX
+        chunk_size = 40
+        for i in range(0, len(answer), chunk_size):
+            yield {"type": "chunk", "text": answer[i:i + chunk_size]}
+            await asyncio.sleep(0.01)
 
         yield {"type": "done", "response_id": None, "tool": None}
 
