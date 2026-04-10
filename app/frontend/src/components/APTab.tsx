@@ -49,24 +49,47 @@ export default function APTab({ userName = "User", onNotify }: Props) {
   const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
   const [approvedIds, setApprovedIds] = useState<Set<string>>(new Set());
   const [escalating, setEscalating] = useState(false);
+  const [showEscalateModal, setShowEscalateModal] = useState(false);
+  const [escalateRecipient, setEscalateRecipient] = useState("akash.s@databricks.com");
+  const [escalateTypes, setEscalateTypes] = useState<Set<string>>(
+    new Set(["AMOUNT_MISMATCH", "NO_PO_REFERENCE", "CRITICAL_OVERDUE", "MISSING_GSTIN"])
+  );
   const feedRef = useRef<HTMLDivElement>(null);
 
-  async function handleEscalate() {
-    const recipient = prompt("Send escalation report to:", "akash.s@databricks.com");
-    if (!recipient) return;
+  const EXCEPTION_OPTIONS = [
+    { key: "AMOUNT_MISMATCH",  label: "Amount Mismatch",          severity: "HIGH",     color: "text-db-amber" },
+    { key: "NO_PO_REFERENCE",  label: "No PO Reference",          severity: "HIGH",     color: "text-db-amber" },
+    { key: "CRITICAL_OVERDUE", label: "Critical Overdue (>60d)",  severity: "CRITICAL", color: "text-db-red"   },
+    { key: "MISSING_GSTIN",    label: "Missing GSTIN",            severity: "MEDIUM",   color: "text-yellow-400" },
+  ];
+
+  function toggleEscalateType(key: string) {
+    setEscalateTypes(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  async function submitEscalate() {
+    if (!escalateRecipient || escalateTypes.size === 0) return;
     setEscalating(true);
+    setShowEscalateModal(false);
     try {
       const res = await fetch("/api/escalate/p2p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recipient }),
+        body: JSON.stringify({
+          recipient: escalateRecipient,
+          exception_types: Array.from(escalateTypes),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Unknown error");
       if (data.status === "no_exceptions") {
-        onNotify?.("No exceptions found — nothing to escalate.");
+        onNotify?.("No matching exceptions — SQL Alert found zero rows.");
       } else {
-        onNotify?.(`✓ Escalation sent to ${recipient} — ${data.count} exceptions reported`);
+        onNotify?.(`✓ SQL Alert fired — ${data.row_count} exception type(s) reported to ${escalateRecipient}`);
       }
     } catch (err) {
       onNotify?.(`Escalation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -275,7 +298,7 @@ export default function APTab({ userName = "User", onNotify }: Props) {
               <span className="text-xs text-db-red font-mono">{stream.exceptions.length}</span>
               {stream.exceptions.length > 0 && (
                 <button
-                  onClick={handleEscalate}
+                  onClick={() => setShowEscalateModal(true)}
                   disabled={escalating}
                   className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-50 transition"
                 >
@@ -381,6 +404,91 @@ export default function APTab({ userName = "User", onNotify }: Props) {
 
       {/* Invoice source document drawer */}
       <InvoiceDrawer invoiceId={openInvoiceId} onClose={() => setOpenInvoiceId(null)} />
+
+      {/* Escalate modal */}
+      {showEscalateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-bg-panel border border-border-subtle rounded-xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden"
+          >
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-border-subtle flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-db-red" />
+              <h3 className="text-sm font-semibold text-text-primary">Escalate via SQL Alert</h3>
+              <span className="ml-auto text-[10px] text-text-muted bg-bg-card px-2 py-0.5 rounded-full border border-border-subtle">
+                Databricks native
+              </span>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Recipient */}
+              <div>
+                <label className="text-xs font-medium text-text-secondary block mb-1.5">
+                  Send alert to
+                </label>
+                <input
+                  type="email"
+                  value={escalateRecipient}
+                  onChange={e => setEscalateRecipient(e.target.value)}
+                  className="w-full bg-bg-card border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-db-blue"
+                  placeholder="email@example.com"
+                />
+              </div>
+
+              {/* Exception type checkboxes */}
+              <div>
+                <label className="text-xs font-medium text-text-secondary block mb-2">
+                  Include exception types
+                </label>
+                <div className="space-y-2">
+                  {EXCEPTION_OPTIONS.map(opt => (
+                    <label
+                      key={opt.key}
+                      className="flex items-center gap-3 p-2.5 rounded-lg border border-border-subtle bg-bg-card cursor-pointer hover:border-db-blue/40 transition"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={escalateTypes.has(opt.key)}
+                        onChange={() => toggleEscalateType(opt.key)}
+                        className="accent-db-red w-3.5 h-3.5"
+                      />
+                      <span className="flex-1 text-xs text-text-primary">{opt.label}</span>
+                      <span className={`text-[10px] font-bold uppercase ${opt.color}`}>
+                        {opt.severity}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-[11px] text-text-muted leading-relaxed">
+                A Databricks SQL Alert will be created/updated for the selected exception types.
+                The recipient will receive an email from Databricks if any rows are found.
+              </p>
+            </div>
+
+            {/* Actions */}
+            <div className="px-5 py-3 border-t border-border-subtle flex gap-2 justify-end">
+              <button
+                onClick={() => setShowEscalateModal(false)}
+                className="px-3 py-1.5 rounded-lg text-xs text-text-muted hover:text-text-primary border border-border-subtle hover:border-border-default transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitEscalate}
+                disabled={escalateTypes.size === 0 || !escalateRecipient}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-40 transition"
+              >
+                <Send className="w-3 h-3" />
+                Send Alert
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

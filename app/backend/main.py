@@ -256,29 +256,24 @@ async def approve_invoice(req: ApprovalRequest, request: Request):
 
 
 
-# ── Escalation: AP Exceptions Email ──────────────────────────────────────────
+# ── Escalation: AP Exceptions via Databricks SQL Alert ───────────────────────
 
 class EscalateRequest(BaseModel):
-    recipient: str  # email address to send to
+    recipient: str         # email address — subscribed to the SQL alert
+    exception_types: list[str]  # e.g. ["AMOUNT_MISMATCH", "NO_PO_REFERENCE"]
 
 @app.post("/api/escalate/p2p")
 async def escalate_p2p(req: EscalateRequest, request: Request):
     """
-    Query gold_fact_invoices for exceptions, generate a PDF table,
-    and email it to the requested recipient.
+    Create/update a Databricks SQL Alert for the selected exception types,
+    subscribe the recipient, and trigger execution.
+    Databricks sends the email natively — no SMTP involved.
     """
     try:
-        exceptions = await asyncio.to_thread(escalate.get_ap_exceptions)
-        if not exceptions:
-            return {"status": "no_exceptions", "count": 0}
-
-        pdf_bytes = await asyncio.to_thread(escalate.generate_pdf, exceptions)
-        await asyncio.to_thread(escalate.send_escalation_email, exceptions, pdf_bytes, req.recipient)
-
-        return {"status": "sent", "count": len(exceptions), "recipient": req.recipient}
-    except ValueError as e:
-        # Missing SMTP config
-        return JSONResponse(status_code=503, content={"error": str(e)})
+        result = await asyncio.to_thread(
+            escalate.run_escalation, req.exception_types, req.recipient
+        )
+        return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

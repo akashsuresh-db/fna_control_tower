@@ -20,18 +20,6 @@ env:
     value: "require"
   - name: LAKEBASE_INSTANCE_NAME
     value: "finance-ops-db"
-  - name: SMTP_HOST
-    value: "smtp.gmail.com"
-  - name: SMTP_PORT
-    value: "587"
-  - name: SMTP_USER
-    value: ""
-  - name: SMTP_PASSWORD
-    value: ""
-  - name: SMTP_FROM
-    value: ""
-  - name: ESCALATION_RECIPIENT
-    value: ""
 resources:
   - name: sql-warehouse
     sql_warehouse:
