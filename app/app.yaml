@@ -13,7 +13,7 @@ env:
   - name: PGUSER
     value: "aba1ec33-e4db-47b2-9c51-60eef4a6603f"
   - name: PGDATABASE
-    value: "postgres"
+    value: "finance_ops_app"
   - name: PGPORT
     value: "5432"
   - name: PGSSLMODE

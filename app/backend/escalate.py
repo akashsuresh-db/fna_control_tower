@@ -111,21 +111,24 @@ def _get_or_create_destination(w: WorkspaceClient, email: str) -> str:
 
     for d in w.notification_destinations.list():
         if "EMAIL" in str(d.destination_type):
-            full = w.notification_destinations.get(d.id)
+            try:
+                full = w.notification_destinations.get(d.id)
+            except Exception as e:
+                print(f"[escalate] Skipping corrupted destination {d.id} ({d.display_name}): {e}")
+                continue
             addrs = (full.config.email.addresses or []) if (full.config and full.config.email) else []
             if email in addrs:
                 _dest_id = d.id
                 return _dest_id
 
     from databricks.sdk.service.settings import (
-        CreateNotificationDestinationRequest,
         Config as NdConfig,
         EmailConfig,
     )
-    nd = w.notification_destinations.create(CreateNotificationDestinationRequest(
+    nd = w.notification_destinations.create(
         display_name=f"Finance Escalation — {email}",
         config=NdConfig(email=EmailConfig(addresses=[email])),
-    ))
+    )
     _dest_id = nd.id
     return _dest_id
 
