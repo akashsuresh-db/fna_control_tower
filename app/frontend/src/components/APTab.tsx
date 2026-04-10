@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, AlertTriangle, Shield, CreditCard, Play, Square,
-  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown
+  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown, Send
 } from "lucide-react";
 import { useSSE } from "../hooks/useSSE";
 import { useMetrics } from "../hooks/useMetrics";
@@ -48,7 +48,32 @@ export default function APTab({ userName = "User", onNotify }: Props) {
   const [selectedEx, setSelectedEx] = useState<(typeof stream.exceptions)[0] | null>(null);
   const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
   const [approvedIds, setApprovedIds] = useState<Set<string>>(new Set());
+  const [escalating, setEscalating] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
+
+  async function handleEscalate() {
+    const recipient = prompt("Send escalation report to:", "akash.s@databricks.com");
+    if (!recipient) return;
+    setEscalating(true);
+    try {
+      const res = await fetch("/api/escalate/p2p", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Unknown error");
+      if (data.status === "no_exceptions") {
+        onNotify?.("No exceptions found — nothing to escalate.");
+      } else {
+        onNotify?.(`✓ Escalation sent to ${recipient} — ${data.count} exceptions reported`);
+      }
+    } catch (err) {
+      onNotify?.(`Escalation failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setEscalating(false);
+    }
+  }
 
   const m = metricsData?.metrics;
   const pr = metricsData?.payment_run;
@@ -247,7 +272,17 @@ export default function APTab({ userName = "User", onNotify }: Props) {
             <div className="px-4 py-3 border-b border-border-subtle flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-db-red" />
               <h3 className="text-sm font-semibold text-text-primary">Exceptions</h3>
-              <span className="ml-auto text-xs text-db-red font-mono">{stream.exceptions.length}</span>
+              <span className="text-xs text-db-red font-mono">{stream.exceptions.length}</span>
+              {stream.exceptions.length > 0 && (
+                <button
+                  onClick={handleEscalate}
+                  disabled={escalating}
+                  className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-50 transition"
+                >
+                  <Send className="w-3 h-3" />
+                  {escalating ? "Sending…" : "Escalate"}
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               <AnimatePresence initial={false}>

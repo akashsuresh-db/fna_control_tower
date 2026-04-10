@@ -15,6 +15,7 @@ from backend.streams import stream_p2p, stream_o2c, stream_r2r
 from backend.chat import stream_mas_agent, AGENT_ENDPOINT
 from backend import lakebase
 from backend.invoice_pdf import build_invoice_pdf
+from backend import escalate
 
 
 @asynccontextmanager
@@ -250,6 +251,34 @@ async def approve_invoice(req: ApprovalRequest, request: Request):
     try:
         await asyncio.to_thread(lakebase.log_approval, req.invoice_id, req.action, req.reason, user)
         return {"status": "logged", "action": req.action, "invoice_id": req.invoice_id}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+
+# ── Escalation: AP Exceptions Email ──────────────────────────────────────────
+
+class EscalateRequest(BaseModel):
+    recipient: str  # email address to send to
+
+@app.post("/api/escalate/p2p")
+async def escalate_p2p(req: EscalateRequest, request: Request):
+    """
+    Query gold_fact_invoices for exceptions, generate a PDF table,
+    and email it to the requested recipient.
+    """
+    try:
+        exceptions = await asyncio.to_thread(escalate.get_ap_exceptions)
+        if not exceptions:
+            return {"status": "no_exceptions", "count": 0}
+
+        pdf_bytes = await asyncio.to_thread(escalate.generate_pdf, exceptions)
+        await asyncio.to_thread(escalate.send_escalation_email, exceptions, pdf_bytes, req.recipient)
+
+        return {"status": "sent", "count": len(exceptions), "recipient": req.recipient}
+    except ValueError as e:
+        # Missing SMTP config
+        return JSONResponse(status_code=503, content={"error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
