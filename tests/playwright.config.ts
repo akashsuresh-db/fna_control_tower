@@ -4,9 +4,9 @@ const BASE_URL = process.env.APP_URL || "http://localhost:5173";
 
 export default defineConfig({
   testDir: "./",
-  testMatch: "test_frontend.spec.ts",
-  timeout: 30_000,
-  retries: 1,
+  testMatch: ["test_frontend.spec.ts", "test_e2e_deployed.spec.ts"],
+  timeout: 60_000,
+  retries: 0,
   reporter: [["list"], ["html", { outputFolder: "../test-results/html", open: "never" }]],
   use: {
     baseURL: BASE_URL,
