@@ -14,9 +14,22 @@ from typing import Any
 
 # Track whether we're in demo mode
 _demo_mode = False
+_init_error: str | None = None   # last error from init_schema — surfaced in /api/debug/status
 _in_memory_approvals: list[dict] = []
 _in_memory_call_logs: list[dict] = []
 _in_memory_chat_history: list[dict] = []
+
+
+def get_status() -> dict:
+    """Return connectivity status for diagnostics."""
+    return {
+        "demo_mode": _demo_mode,
+        "init_error": _init_error,
+        "host": os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST") or "(not set)",
+        "user": os.environ.get("PGUSER") or os.environ.get("LAKEBASE_USER") or "(not set)",
+        "instance": os.environ.get("LAKEBASE_INSTANCE_NAME", "finance-ops-db"),
+        "in_memory_chat_rows": len(_in_memory_chat_history),
+    }
 
 
 def _fresh_token() -> str:
@@ -53,14 +66,55 @@ def _get_conn():
     )
 
 
+_DDL_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS ap_approvals (
+        id SERIAL PRIMARY KEY,
+        invoice_id VARCHAR(50),
+        action VARCHAR(20),
+        reason TEXT,
+        approved_by VARCHAR(100),
+        approved_at TIMESTAMP DEFAULT NOW()
+    )""",
+    """CREATE TABLE IF NOT EXISTS ar_call_logs (
+        id SERIAL PRIMARY KEY,
+        customer_id VARCHAR(50),
+        customer_name VARCHAR(200),
+        outcome VARCHAR(50),
+        ptp_date DATE,
+        notes TEXT,
+        logged_by VARCHAR(100),
+        logged_at TIMESTAMP DEFAULT NOW()
+    )""",
+    """CREATE TABLE IF NOT EXISTS chat_history (
+        id SERIAL PRIMARY KEY,
+        session_id VARCHAR(100),
+        user_email VARCHAR(200),
+        active_tab VARCHAR(50),
+        question TEXT,
+        genie_space VARCHAR(50),
+        answer TEXT,
+        sql_used TEXT,
+        routing_info JSONB,
+        previous_response_id VARCHAR(200),
+        asked_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(session_id, asked_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_history(user_email, asked_at DESC)",
+    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS routing_info JSONB",
+    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS previous_response_id VARCHAR(200)",
+]
+
+
 def init_schema():
     """Create tables if they don't exist. Falls back to demo mode."""
-    global _demo_mode
+    global _demo_mode, _init_error
 
     host = os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST")
     user = os.environ.get("PGUSER") or os.environ.get("LAKEBASE_USER")
     if not host or not user:
-        print("Lakebase not configured (PGHOST/PGUSER missing) - using in-memory demo mode")
+        msg = "Lakebase not configured (PGHOST/PGUSER missing) — using in-memory demo mode"
+        print(msg)
+        _init_error = msg
         _demo_mode = True
         return
 
@@ -68,61 +122,28 @@ def init_schema():
         conn = _get_conn()
         with conn:
             with conn.cursor() as cur:
-                # Try to create tables — may fail if SP lacks CREATE privilege,
-                # but tables may already exist (pre-created by admin). That's fine.
-                try:
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS ap_approvals (
-                            id SERIAL PRIMARY KEY,
-                            invoice_id VARCHAR(50),
-                            action VARCHAR(20),
-                            reason TEXT,
-                            approved_by VARCHAR(100),
-                            approved_at TIMESTAMP DEFAULT NOW()
-                        );
-                        CREATE TABLE IF NOT EXISTS ar_call_logs (
-                            id SERIAL PRIMARY KEY,
-                            customer_id VARCHAR(50),
-                            customer_name VARCHAR(200),
-                            outcome VARCHAR(50),
-                            ptp_date DATE,
-                            notes TEXT,
-                            logged_by VARCHAR(100),
-                            logged_at TIMESTAMP DEFAULT NOW()
-                        );
-                        CREATE TABLE IF NOT EXISTS chat_history (
-                            id SERIAL PRIMARY KEY,
-                            session_id VARCHAR(100),
-                            user_email VARCHAR(200),
-                            active_tab VARCHAR(50),
-                            question TEXT,
-                            genie_space VARCHAR(50),
-                            answer TEXT,
-                            sql_used TEXT,
-                            routing_info JSONB,
-                            previous_response_id VARCHAR(200),
-                            asked_at TIMESTAMP DEFAULT NOW()
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_chat_session
-                            ON chat_history(session_id, asked_at ASC);
-                        CREATE INDEX IF NOT EXISTS idx_chat_user
-                            ON chat_history(user_email, asked_at DESC);
-                    """)
-                    cur.execute("""
-                        ALTER TABLE chat_history
-                            ADD COLUMN IF NOT EXISTS routing_info JSONB;
-                        ALTER TABLE chat_history
-                            ADD COLUMN IF NOT EXISTS previous_response_id VARCHAR(200);
-                    """)
-                except Exception as ddl_err:
-                    # DDL failed (e.g. no CREATE privilege) — verify tables exist
-                    conn.rollback()
-                    cur.execute("SELECT COUNT(*) FROM chat_history LIMIT 1")
-                    print(f"DDL skipped (tables pre-created): {ddl_err}")
+                for stmt in _DDL_STATEMENTS:
+                    try:
+                        cur.execute(stmt)
+                    except Exception as ddl_err:
+                        # Likely no CREATE privilege — check tables already exist
+                        conn.rollback()
+                        print(f"DDL skipped (pre-created or no privilege): {ddl_err}")
+                        try:
+                            cur.execute("SELECT 1 FROM chat_history LIMIT 1")
+                            print("chat_history table confirmed to exist")
+                        except Exception as verify_err:
+                            raise RuntimeError(
+                                f"DDL failed AND chat_history not found: {verify_err}"
+                            ) from ddl_err
+                        break  # tables exist, stop DDL attempts
         conn.close()
         print("Lakebase schema ready")
+        _init_error = None
     except Exception as e:
-        print(f"Lakebase schema init failed, using demo mode: {e}")
+        msg = str(e)
+        print(f"Lakebase schema init failed, using demo mode: {msg}")
+        _init_error = msg
         _demo_mode = True
 
 

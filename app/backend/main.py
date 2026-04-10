@@ -44,6 +44,21 @@ async def health():
     return {"status": "healthy", "app": "finance-operations"}
 
 
+@app.get("/api/debug/status")
+async def debug_status():
+    """Diagnostics: Lakebase mode, escalate alert state."""
+    from backend import escalate as _esc
+    return {
+        "lakebase": lakebase.get_status(),
+        "escalate": {
+            "alert_id": _esc._alert_id,
+            "dest_id": _esc._dest_id,
+            "recipient": _esc.RECIPIENT,
+            "sql_cached": bool(_esc._last_sql),
+        },
+    }
+
+
 # ── User Identity ──
 
 @app.get("/api/me")
