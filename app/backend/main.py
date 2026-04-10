@@ -259,20 +259,17 @@ async def approve_invoice(req: ApprovalRequest, request: Request):
 # ── Escalation: AP Exceptions via Databricks SQL Alert ───────────────────────
 
 class EscalateRequest(BaseModel):
-    recipient: str         # email address — subscribed to the SQL alert
     exception_types: list[str]  # e.g. ["AMOUNT_MISMATCH", "NO_PO_REFERENCE"]
 
 @app.post("/api/escalate/p2p")
-async def escalate_p2p(req: EscalateRequest, request: Request):
+async def escalate_p2p(req: EscalateRequest):
     """
-    Create/update a Databricks SQL Alert for the selected exception types,
-    subscribe the recipient, and trigger execution.
-    Databricks sends the email natively — no SMTP involved.
+    Create/update a Databricks SQL Alert for the selected exception types
+    and unpause it so Databricks fires the email within ~60 seconds.
+    Recipient is set via ESCALATION_RECIPIENT env var — not from the UI.
     """
     try:
-        result = await asyncio.to_thread(
-            escalate.run_escalation, req.exception_types, req.recipient
-        )
+        result = await asyncio.to_thread(escalate.run_escalation, req.exception_types)
         return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

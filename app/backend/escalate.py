@@ -1,107 +1,109 @@
-"""AP Exception Escalation via native Databricks SQL Alerts.
+"""AP Exception Escalation via native Databricks SQL Alerts (V2).
 
-No SMTP. No custom email. Databricks sends the email natively.
+Uses the Databricks SDK AlertsV2 API — no SMTP, no custom email.
+Databricks sends the email natively when the alert condition is met.
 
 Flow per Escalate click:
-  1. ensure_alert()   — creates SQL query + alert + email subscription (idempotent)
-  2. update_query()   — rewrites the query SQL with the selected exception_types
-  3. trigger_alert()  — executes the query via statement execution;
-                        Databricks evaluates the alert condition and fires email if rows > 0
+  1. Build SQL WHERE clause from selected exception_types
+  2. Create AlertV2 (first call) or update its query_text + unpause (subsequent calls)
+     - Alert has email subscription via notification destination
+     - Schedule: every minute, UNPAUSED → fires within 60s
+  3. Return immediately; alert fires within ~60 seconds
+  4. Background task pauses the schedule after 90s to avoid repeat emails
 
-The alert query returns one summary row per exception type so the
-Databricks alert email is readable without any custom templating.
+State (alert_id) persisted in /tmp/fna_alert_state.json (recreated if app restarts).
 
-State (query_id, alert_id) is cached in /tmp/fna_alert_state.json —
-recreated automatically if the app restarts.
+ESCALATION_RECIPIENT env var sets the email address — not collected from UI.
 """
+import asyncio
 import json
 import os
-import time
 from pathlib import Path
 
-import requests
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import sql as dbsql
 
-from backend.config import CATALOG, SCHEMA, get_workspace_host, get_token
+from backend.config import CATALOG, SCHEMA
 
-# ── Exception type definitions ───────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
+
+ALERT_NAME   = "AP Exception Escalation — Finance Control Tower"
+WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "4b9b953939869799")
+RECIPIENT    = os.environ.get("ESCALATION_RECIPIENT", "akash.s@databricks.com")
+
+_STATE_FILE  = Path("/tmp/fna_alert_state.json")
+
+# ── Exception type definitions (mirrors streams.py exactly) ──────────────────
 
 EXCEPTION_TYPES = {
-    "AMOUNT_MISMATCH":  {
+    "AMOUNT_MISMATCH": {
         "label":  "Amount Mismatch",
         "filter": "match_status = 'AMOUNT_MISMATCH'",
-        "severity": "HIGH",
     },
-    "NO_PO_REFERENCE":  {
+    "NO_PO_REFERENCE": {
         "label":  "No PO Reference",
         "filter": "match_status = 'NO_PO_REFERENCE'",
-        "severity": "HIGH",
     },
     "CRITICAL_OVERDUE": {
         "label":  "Critical Overdue (>60 days)",
         "filter": "is_overdue = true AND CAST(aging_days AS INT) > 60",
-        "severity": "CRITICAL",
     },
-    "MISSING_GSTIN":    {
+    "MISSING_GSTIN": {
         "label":  "Missing GSTIN",
         "filter": "gstin_vendor IS NULL",
-        "severity": "MEDIUM",
     },
 }
-
-_STATE_FILE = Path("/tmp/fna_alert_state.json")
-ALERT_NAME  = "AP Exception Escalation — Finance Control Tower"
-QUERY_NAME  = "AP Exception Escalation Query"
 
 
 # ── SQL builder ───────────────────────────────────────────────────────────────
 
 def build_alert_sql(exception_types: list[str]) -> str:
     """
-    Build the alert query for the selected exception types.
+    Build alert SQL for the selected exception types.
+    Returns one summary row per type — clear in the Databricks alert email.
 
-    Returns one summary row per exception type so the Databricks alert
-    email table is meaningful at a glance:
-
-      exception_type       | severity | exception_count | total_amount_inr
-      Amount Mismatch      | HIGH     | 5               | 1234567
-      Critical Overdue     | CRITICAL | 3               | 987654
+      exception_type      | severity | exception_count | total_amount_inr
+      Amount Mismatch     | HIGH     | 5               | 12345678
+      Critical Overdue    | CRITICAL | 3               | 9876543
     """
     keys = [k for k in exception_types if k in EXCEPTION_TYPES] or list(EXCEPTION_TYPES)
 
-    # Build CASE branches only for selected types
+    severity_map = {
+        "AMOUNT_MISMATCH":  "HIGH",
+        "NO_PO_REFERENCE":  "HIGH",
+        "CRITICAL_OVERDUE": "CRITICAL",
+        "MISSING_GSTIN":    "MEDIUM",
+    }
+
     type_case = "\n            ".join(
         f"WHEN {EXCEPTION_TYPES[k]['filter']} THEN '{EXCEPTION_TYPES[k]['label']}'"
         for k in keys
     )
     sev_case = "\n            ".join(
-        f"WHEN {EXCEPTION_TYPES[k]['filter']} THEN '{EXCEPTION_TYPES[k]['severity']}'"
+        f"WHEN {EXCEPTION_TYPES[k]['filter']} THEN '{severity_map[k]}'"
         for k in keys
     )
-    where_clauses = " OR ".join(f"({EXCEPTION_TYPES[k]['filter']})" for k in keys)
+    where = " OR ".join(f"({EXCEPTION_TYPES[k]['filter']})" for k in keys)
 
-    return f"""
-SELECT
+    return f"""SELECT
     exception_type,
     severity,
-    COUNT(*)                       AS exception_count,
+    COUNT(*)                           AS exception_count,
     CAST(SUM(invoice_total_inr) AS BIGINT) AS total_amount_inr
 FROM (
     SELECT
         invoice_total_inr,
-        CASE
-            {type_case}
+        CASE {type_case}
         END AS exception_type,
-        CASE
-            {sev_case}
+        CASE {sev_case}
         END AS severity
     FROM `{CATALOG}`.`{SCHEMA}`.gold_fact_invoices
-    WHERE {where_clauses}
+    WHERE {where}
 ) t
 GROUP BY exception_type, severity
 ORDER BY
     CASE severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 ELSE 3 END,
-    exception_count DESC
-""".strip()
+    exception_count DESC"""
 
 
 # ── State helpers ─────────────────────────────────────────────────────────────
@@ -117,186 +119,133 @@ def _save_state(state: dict) -> None:
     _STATE_FILE.write_text(json.dumps(state))
 
 
-# ── Databricks DBSQL REST helpers ─────────────────────────────────────────────
+# ── Notification destination ──────────────────────────────────────────────────
 
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {get_token()}",
-        "Content-Type": "application/json",
-    }
+def _get_or_create_destination(w: WorkspaceClient, email: str) -> str:
+    """Find or create an email notification destination for the recipient."""
+    dests = list(w.notification_destinations.list())
 
+    # Look for an existing email destination for this address
+    for d in dests:
+        if "EMAIL" in str(d.destination_type):
+            full = w.notification_destinations.get(d.id)
+            addrs = []
+            if full.config and full.config.email:
+                addrs = full.config.email.addresses or []
+            if email in addrs:
+                return d.id
 
-def _host() -> str:
-    return get_workspace_host()
-
-
-def _sql_post(path: str, payload: dict) -> dict:
-    r = requests.post(f"{_host()}{path}", json=payload, headers=_headers(), timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-
-def _sql_put(path: str, payload: dict) -> dict:
-    r = requests.put(f"{_host()}{path}", json=payload, headers=_headers(), timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-
-def _sql_get(path: str) -> dict:
-    r = requests.get(f"{_host()}{path}", headers=_headers(), timeout=30)
-    r.raise_for_status()
-    return r.json()
+    # Create one
+    from databricks.sdk.service.settings import (
+        CreateNotificationDestinationRequest,
+        Config as NdConfig,
+        EmailConfig,
+    )
+    nd = w.notification_destinations.create(CreateNotificationDestinationRequest(
+        display_name=f"Finance Escalation — {email}",
+        config=NdConfig(email=EmailConfig(addresses=[email])),
+    ))
+    return nd.id
 
 
-# ── Core logic ────────────────────────────────────────────────────────────────
+# ── Alert lifecycle ───────────────────────────────────────────────────────────
 
-def _warehouse_id() -> str:
-    return os.environ.get("DATABRICKS_WAREHOUSE_ID", "4b9b953939869799")
+def _alert_spec(query_text: str, dest_id: str, paused: bool) -> dbsql.AlertV2:
+    """Build the AlertV2 spec."""
+    pause_status = (
+        dbsql.SchedulePauseStatus.PAUSED
+        if paused
+        else dbsql.SchedulePauseStatus.UNPAUSED
+    )
+    return dbsql.AlertV2(
+        display_name=ALERT_NAME,
+        query_text=query_text,
+        warehouse_id=WAREHOUSE_ID,
+        evaluation=dbsql.AlertV2Evaluation(
+            source=dbsql.AlertV2OperandColumn(name="exception_count"),
+            comparison_operator=dbsql.ComparisonOperator.GREATER_THAN,
+            threshold=dbsql.AlertV2Operand(
+                value=dbsql.AlertV2OperandValue(double_value=0)
+            ),
+            notification=dbsql.AlertV2Notification(
+                subscriptions=[dbsql.AlertV2Subscription(destination_id=dest_id)],
+                retrigger_seconds=0,
+            ),
+        ),
+        schedule=dbsql.CronSchedule(
+            quartz_cron_schedule="0 * * * * ?",  # every minute
+            timezone_id="Asia/Kolkata",
+            pause_status=pause_status,
+        ),
+    )
 
 
-def ensure_alert(recipient: str, exception_types: list[str]) -> dict:
+def create_or_update_alert(exception_types: list[str]) -> dict:
     """
-    Idempotently create (or load) the SQL query and alert.
-    Adds the recipient as an email subscriber if not already subscribed.
-    Returns the current state dict {query_id, alert_id}.
+    Create or update the SQL Alert with the selected exception_types SQL.
+    Unpauses the schedule so it fires within ~60 seconds.
+    Returns state dict with alert_id.
     """
+    w = WorkspaceClient()
     state = _load_state()
 
-    # ── 1. SQL Query ──────────────────────────────────────────────────────────
     sql = build_alert_sql(exception_types)
+    dest_id = _get_or_create_destination(w, RECIPIENT)
 
-    if "query_id" not in state:
-        q = _sql_post("/api/2.0/sql/queries", {
-            "name":            QUERY_NAME,
-            "query":           sql,
-            "data_source_id":  _warehouse_id(),
-            "description":     "Automatically updated by Finance Control Tower Escalate action.",
-        })
-        state["query_id"] = q["id"]
-        print(f"[escalate] Created SQL query: {state['query_id']}")
+    # Check if existing alert is still alive
+    alert_id = state.get("alert_id")
+    if alert_id:
+        try:
+            w.alerts_v2.get_alert(id=alert_id)
+        except Exception:
+            alert_id = None  # trashed or missing — recreate
+
+    if not alert_id:
+        a = w.alerts_v2.create_alert(alert=_alert_spec(sql, dest_id, paused=False))
+        alert_id = a.id
+        print(f"[escalate] Created alert {alert_id}")
     else:
-        # Update the SQL to reflect current exception_types selection
-        _sql_post(f"/api/2.0/sql/queries/{state['query_id']}", {
-            "name":  QUERY_NAME,
-            "query": sql,
-        })
+        w.alerts_v2.update_alert(
+            id=alert_id,
+            alert=_alert_spec(sql, dest_id, paused=False),
+            update_mask="query_text,evaluation,schedule",
+        )
+        print(f"[escalate] Updated alert {alert_id}, unpaused")
 
-    # ── 2. Alert ──────────────────────────────────────────────────────────────
-    if "alert_id" not in state:
-        a = _sql_post("/api/2.0/sql/alerts", {
-            "name":      ALERT_NAME,
-            "query_id":  state["query_id"],
-            "options": {
-                "column":    "exception_count",
-                "op":        ">",
-                "value":     "0",
-                "muted":     False,
-                "custom_subject": "⚠️ AP Exception Escalation — Finance Control Tower",
-                "custom_body": (
-                    "The following AP exceptions were detected in "
-                    f"`{CATALOG}.{SCHEMA}.gold_fact_invoices`.\n\n"
-                    "{{QUERY_RESULT_TABLE}}\n\n"
-                    "Open Finance Control Tower to review and action."
-                ),
-            },
-            "rearm": 0,  # fire every time condition is met (no cooldown)
-        })
-        state["alert_id"] = a["id"]
-        print(f"[escalate] Created SQL alert: {state['alert_id']}")
-
+    state["alert_id"] = alert_id
+    state["dest_id"] = dest_id
     _save_state(state)
-
-    # ── 3. Email subscription (idempotent) ────────────────────────────────────
-    _ensure_subscription(state["alert_id"], recipient)
-
     return state
 
 
-def _ensure_subscription(alert_id: str, email: str) -> None:
-    """Add email subscription to the alert if not already present."""
-    # List existing subscriptions
+def pause_alert(alert_id: str, dest_id: str, sql: str) -> None:
+    """Pause the alert after it has fired (called from background task)."""
     try:
-        existing = _sql_get(f"/api/2.0/sql/alerts/{alert_id}/subscriptions")
-        subs = existing if isinstance(existing, list) else existing.get("results", [])
-        for s in subs:
-            sub_email = (
-                s.get("subscriber", {}).get("email_address")
-                or s.get("email_address", "")
-            )
-            if sub_email == email:
-                return  # already subscribed
+        w = WorkspaceClient()
+        w.alerts_v2.update_alert(
+            id=alert_id,
+            alert=_alert_spec(sql, dest_id, paused=True),
+            update_mask="schedule",
+        )
+        print(f"[escalate] Paused alert {alert_id}")
     except Exception as e:
-        print(f"[escalate] Could not list subscriptions: {e}")
-
-    # Add subscription
-    try:
-        _sql_post(f"/api/2.0/sql/alerts/{alert_id}/subscriptions", {
-            "subscriber": {"email_address": email}
-        })
-        print(f"[escalate] Subscribed {email} to alert {alert_id}")
-    except Exception as e:
-        print(f"[escalate] Subscription failed (may already exist): {e}")
-
-
-def trigger_alert(state: dict) -> dict:
-    """
-    Execute the query via Databricks Statement Execution API.
-    Databricks evaluates the alert condition against the result and
-    fires the email notification natively if exception_count > 0.
-
-    Returns {"row_count": N, "fired": bool}
-    """
-    warehouse_id = _warehouse_id()
-
-    # Execute via Statement Execution API (synchronous, wait for result)
-    resp = _sql_post("/api/2.0/sql/statements", {
-        "warehouse_id": warehouse_id,
-        "statement":    _sql_get(f"/api/2.0/sql/queries/{state['query_id']}")["query"],
-        "wait_timeout": "30s",
-        "on_wait_timeout": "CONTINUE",
-    })
-
-    statement_id = resp.get("statement_id")
-    status = resp.get("status", {}).get("state", "")
-
-    # Poll until terminal state
-    for _ in range(20):
-        if status in ("SUCCEEDED", "FAILED", "CANCELED", "CLOSED"):
-            break
-        time.sleep(1.5)
-        resp = _sql_get(f"/api/2.0/sql/statements/{statement_id}")
-        status = resp.get("status", {}).get("state", "")
-
-    if status != "SUCCEEDED":
-        raise RuntimeError(f"Statement execution ended with state: {status}")
-
-    row_count = resp.get("manifest", {}).get("total_row_count", 0)
-
-    # Also trigger the alert refresh so Databricks evaluates + sends email
-    try:
-        _sql_post(f"/api/2.0/sql/queries/{state['query_id']}/refresh", {})
-    except Exception as e:
-        # Some workspace versions use a different path — log but don't fail
-        print(f"[escalate] Query refresh endpoint: {e}")
-
-    return {"row_count": row_count, "fired": row_count > 0}
+        print(f"[escalate] Could not pause alert: {e}")
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def run_escalation(exception_types: list[str], recipient: str) -> dict:
+def run_escalation(exception_types: list[str]) -> dict:
     """
-    Full escalation flow:
-      1. Ensure alert exists with the right SQL and subscriber
-      2. Execute the query → Databricks fires the alert email
-    Returns {"status", "row_count", "alert_id", "query_id"}
+    Configure and arm the SQL Alert for the selected exception types.
+    The alert evaluates within ~60 seconds and Databricks sends the email.
+
+    Returns {"status", "alert_id", "recipient", "exception_types"}
     """
-    state  = ensure_alert(recipient, exception_types)
-    result = trigger_alert(state)
+    state = create_or_update_alert(exception_types)
     return {
-        "status":    "fired" if result["fired"] else "no_exceptions",
-        "row_count": result["row_count"],
-        "alert_id":  state.get("alert_id"),
-        "query_id":  state.get("query_id"),
-        "recipient": recipient,
+        "status":          "scheduled",
+        "alert_id":        state["alert_id"],
+        "recipient":       RECIPIENT,
+        "exception_types": exception_types,
+        "message":         f"SQL Alert armed — email to {RECIPIENT} within ~60 seconds.",
     }

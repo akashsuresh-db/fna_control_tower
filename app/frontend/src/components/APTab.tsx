@@ -50,7 +50,6 @@ export default function APTab({ userName = "User", onNotify }: Props) {
   const [approvedIds, setApprovedIds] = useState<Set<string>>(new Set());
   const [escalating, setEscalating] = useState(false);
   const [showEscalateModal, setShowEscalateModal] = useState(false);
-  const [escalateRecipient, setEscalateRecipient] = useState("akash.s@databricks.com");
   const [escalateTypes, setEscalateTypes] = useState<Set<string>>(
     new Set(["AMOUNT_MISMATCH", "NO_PO_REFERENCE", "CRITICAL_OVERDUE", "MISSING_GSTIN"])
   );
@@ -72,25 +71,18 @@ export default function APTab({ userName = "User", onNotify }: Props) {
   }
 
   async function submitEscalate() {
-    if (!escalateRecipient || escalateTypes.size === 0) return;
+    if (escalateTypes.size === 0) return;
     setEscalating(true);
     setShowEscalateModal(false);
     try {
       const res = await fetch("/api/escalate/p2p", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: escalateRecipient,
-          exception_types: Array.from(escalateTypes),
-        }),
+        body: JSON.stringify({ exception_types: Array.from(escalateTypes) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Unknown error");
-      if (data.status === "no_exceptions") {
-        onNotify?.("No matching exceptions — SQL Alert found zero rows.");
-      } else {
-        onNotify?.(`✓ SQL Alert fired — ${data.row_count} exception type(s) reported to ${escalateRecipient}`);
-      }
+      onNotify?.(`✓ SQL Alert armed — email to ${data.recipient} within ~60 seconds`);
     } catch (err) {
       onNotify?.(`Escalation failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -295,17 +287,17 @@ export default function APTab({ userName = "User", onNotify }: Props) {
             <div className="px-4 py-3 border-b border-border-subtle flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-db-red" />
               <h3 className="text-sm font-semibold text-text-primary">Exceptions</h3>
-              <span className="text-xs text-db-red font-mono">{stream.exceptions.length}</span>
-              {stream.exceptions.length > 0 && (
-                <button
-                  onClick={() => setShowEscalateModal(true)}
-                  disabled={escalating}
-                  className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-50 transition"
-                >
-                  <Send className="w-3 h-3" />
-                  {escalating ? "Sending…" : "Escalate"}
-                </button>
-              )}
+              <span className="text-xs text-db-red font-mono">
+                {stream.exceptions.length > 0 ? stream.exceptions.length : (m?.exceptions ?? "")}
+              </span>
+              <button
+                onClick={() => setShowEscalateModal(true)}
+                disabled={escalating}
+                className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-50 transition"
+              >
+                <Send className="w-3 h-3" />
+                {escalating ? "Sending…" : "Escalate"}
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               <AnimatePresence initial={false}>
@@ -423,20 +415,6 @@ export default function APTab({ userName = "User", onNotify }: Props) {
             </div>
 
             <div className="p-5 space-y-4">
-              {/* Recipient */}
-              <div>
-                <label className="text-xs font-medium text-text-secondary block mb-1.5">
-                  Send alert to
-                </label>
-                <input
-                  type="email"
-                  value={escalateRecipient}
-                  onChange={e => setEscalateRecipient(e.target.value)}
-                  className="w-full bg-bg-card border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-db-blue"
-                  placeholder="email@example.com"
-                />
-              </div>
-
               {/* Exception type checkboxes */}
               <div>
                 <label className="text-xs font-medium text-text-secondary block mb-2">
@@ -479,7 +457,7 @@ export default function APTab({ userName = "User", onNotify }: Props) {
               </button>
               <button
                 onClick={submitEscalate}
-                disabled={escalateTypes.size === 0 || !escalateRecipient}
+                disabled={escalateTypes.size === 0}
                 className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-db-red text-white hover:bg-db-red/80 disabled:opacity-40 transition"
               >
                 <Send className="w-3 h-3" />

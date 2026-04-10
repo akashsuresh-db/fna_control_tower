@@ -20,6 +20,8 @@ env:
     value: "require"
   - name: LAKEBASE_INSTANCE_NAME
     value: "finance-ops-db"
+  - name: ESCALATION_RECIPIENT
+    value: "akash.s@databricks.com"
 resources:
   - name: sql-warehouse
     sql_warehouse:
