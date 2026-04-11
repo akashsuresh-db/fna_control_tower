@@ -1,0 +1,53 @@
+bundle:
+  name: fna-control-tower
+
+variables:
+  catalog:
+    description: "Unity Catalog name for all tables and volumes"
+    default: hp_sf_test
+
+  schema:
+    description: "Schema within the catalog for finance & accounting data"
+    default: finance_and_accounting
+
+  warehouse_id:
+    description: "SQL Warehouse ID for queries and app"
+    default: "4b9b953939869799"
+
+  escalation_recipient:
+    description: "Email address for AP escalation alerts"
+    default: "akash.s@databricks.com"
+
+  genie_space_id:
+    description: "Genie Space ID (leave empty to skip)"
+    default: ""
+
+  serving_endpoint_name:
+    description: "Model serving endpoint for AI chat"
+    default: "mas-3744e932-endpoint"
+
+  lakebase_instance_name:
+    description: "Lakebase (Postgres) instance name for operational state"
+    default: "finance-ops-db"
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Shared/.bundle/${bundle.name}/prod
+    permissions:
+      - group_name: users
+        level: CAN_MANAGE
+    resources:
+      pipelines:
+        fna_dlt_pipeline:
+          development: false

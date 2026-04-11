@@ -406,10 +406,10 @@ async def get_invoice(invoice_id: str):
                 NULL                     AS payment_terms,
                 r.raw_text,
                 r.file_path
-            FROM akash_s.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN akash_s.finance_and_accounting.gold_dim_vendor v
+            FROM hp_sf_test.finance_and_accounting.gold_fact_invoices i
+            LEFT JOIN hp_sf_test.finance_and_accounting.gold_dim_vendor v
                 ON i.vendor_id = v.vendor_id
-            LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
+            LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
                 ON i.invoice_id = r.invoice_id
             WHERE {gold_col} = '{invoice_id}'
             LIMIT 1
@@ -434,10 +434,10 @@ async def get_invoice(invoice_id: str):
                     e.payment_terms,
                     r.raw_text,
                     r.file_path
-                FROM akash_s.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
+                FROM hp_sf_test.finance_and_accounting.silver_invoice_exceptions e
+                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
                     ON e.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v
+                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v
                     ON e.vendor_id = v.vendor_id
                 WHERE {exc_col} = '{invoice_id}'
                 LIMIT 1
@@ -462,10 +462,10 @@ async def get_invoice(invoice_id: str):
                     b.payment_terms,
                     r.raw_text,
                     r.file_path
-                FROM akash_s.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
+                FROM hp_sf_test.finance_and_accounting.bronze_p2p_invoices b
+                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
                     ON b.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v
+                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v
                     ON b.vendor_id = v.vendor_id
                 WHERE {bronze_col} = '{invoice_id}'
                 LIMIT 1
@@ -505,9 +505,9 @@ async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
                 i.invoice_date, i.due_date, i.invoice_amount, i.invoice_total_inr AS po_amount,
                 i.invoice_status AS status, i.gstin_vendor, NULL AS payment_terms,
                 r.raw_text, r.file_path
-            FROM akash_s.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN akash_s.finance_and_accounting.gold_dim_vendor v ON i.vendor_id = v.vendor_id
-            LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON i.invoice_id = r.invoice_id
+            FROM hp_sf_test.finance_and_accounting.gold_fact_invoices i
+            LEFT JOIN hp_sf_test.finance_and_accounting.gold_dim_vendor v ON i.vendor_id = v.vendor_id
+            LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON i.invoice_id = r.invoice_id
             WHERE {gold_col} = '{invoice_id}'
             LIMIT 1
         """)
@@ -521,9 +521,9 @@ async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
                     e.invoice_date, e.due_date, e.invoice_amount, e.total_amount AS po_amount,
                     e.status, e.gstin_vendor, e.payment_terms,
                     r.raw_text, r.file_path
-                FROM akash_s.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON e.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v ON e.vendor_id = v.vendor_id
+                FROM hp_sf_test.finance_and_accounting.silver_invoice_exceptions e
+                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON e.invoice_id = r.invoice_id
+                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v ON e.vendor_id = v.vendor_id
                 WHERE {exc_col} = '{invoice_id}'
                 LIMIT 1
             """)
@@ -537,9 +537,9 @@ async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
                     b.invoice_date, b.due_date, b.invoice_amount, b.total_amount AS po_amount,
                     b.status, b.gstin_vendor, b.payment_terms,
                     r.raw_text, r.file_path
-                FROM akash_s.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON b.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v ON b.vendor_id = v.vendor_id
+                FROM hp_sf_test.finance_and_accounting.bronze_p2p_invoices b
+                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON b.invoice_id = r.invoice_id
+                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v ON b.vendor_id = v.vendor_id
                 WHERE {bronze_col} = '{invoice_id}'
                 LIMIT 1
             """)

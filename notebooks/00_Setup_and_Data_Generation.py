@@ -5,7 +5,7 @@
 # MAGIC This notebook generates all synthetic datasets for P2P, O2C, and R2R workflows.
 # MAGIC Covers: Vendors, POs, GRNs, Invoices, Customers, Sales Orders, GL, Journal Entries
 # MAGIC
-# MAGIC **Catalog**: akash_s_demo
+# MAGIC **Catalog**: hp_sf_test
 # MAGIC **Schema**: finance_and_accounting
 
 # COMMAND ----------
@@ -14,11 +14,15 @@
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
-SCHEMA = "finance_and_accounting"
+dbutils.widgets.text("catalog", "hp_sf_test", "Unity Catalog")
+dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_invoices"
 
 spark.sql(f"USE CATALOG {CATALOG}")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"USE SCHEMA {SCHEMA}")
 
 # Create volume for raw invoice files
@@ -41,8 +45,8 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
-SCHEMA = "finance_and_accounting"
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_invoices"
 
 # COMMAND ----------

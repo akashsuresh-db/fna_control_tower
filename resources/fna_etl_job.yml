@@ -1,0 +1,101 @@
+resources:
+  jobs:
+    fna_etl_workflow:
+      name: "FnA Control Tower - ETL Workflow"
+      tags:
+        project: fna-control-tower
+        domain: finance-and-accounting
+
+      tasks:
+        # Step 1: Generate synthetic data (bronze tables + UC volume files)
+        - task_key: data_generation
+          notebook_task:
+            notebook_path: ../notebooks/00_Setup_and_Data_Generation.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 3600
+
+        # Step 2: DLT pipeline (bronze → silver with expectations + quarantine)
+        - task_key: dlt_bronze_to_silver
+          depends_on:
+            - task_key: data_generation
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.fna_dlt_pipeline.id}
+            full_refresh: true
+
+        # Step 3a: Gold layer - Procure-to-Pay
+        - task_key: gold_p2p
+          depends_on:
+            - task_key: dlt_bronze_to_silver
+          notebook_task:
+            notebook_path: ../notebooks/02_Gold_Layer_P2P.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 1800
+
+        # Step 3b: Gold layer - Order-to-Cash (parallel with P2P and R2R)
+        - task_key: gold_o2c
+          depends_on:
+            - task_key: dlt_bronze_to_silver
+          notebook_task:
+            notebook_path: ../notebooks/03_Gold_Layer_O2C.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 1800
+
+        # Step 3c: Gold layer - Record-to-Report (parallel with P2P and O2C)
+        - task_key: gold_r2r
+          depends_on:
+            - task_key: dlt_bronze_to_silver
+          notebook_task:
+            notebook_path: ../notebooks/04_Gold_Layer_R2R.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 1800
+
+        # Step 4: AI-powered invoice extraction (after all gold layers)
+        - task_key: invoice_ai_processing
+          depends_on:
+            - task_key: gold_p2p
+            - task_key: gold_o2c
+            - task_key: gold_r2r
+          notebook_task:
+            notebook_path: ../notebooks/05_Invoice_AI_Processing.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 1800
+
+        # Step 5: Create unified KPI view for Genie
+        - task_key: create_kpi_view
+          depends_on:
+            - task_key: gold_p2p
+            - task_key: gold_o2c
+            - task_key: gold_r2r
+          notebook_task:
+            notebook_path: ../notebooks/06_Create_KPI_View.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+            source: WORKSPACE
+          environment_key: default
+          timeout_seconds: 600
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"

@@ -1,0 +1,20 @@
+resources:
+  apps:
+    fna_control_tower_app:
+      name: "fna-control-tower"
+      description: "Finance & Accounting Control Tower - Real-time AP/AR/GL monitoring with AI-powered exception handling"
+      source_code_path: ../app #replace with the path to the app directory
+
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: claude-endpoint
+          serving_endpoint:
+            name: "databricks-claude-sonnet-4-5"
+            permission: CAN_QUERY
+        - name: mas-supervisor
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY

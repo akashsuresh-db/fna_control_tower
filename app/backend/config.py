@@ -5,7 +5,7 @@ IS_DATABRICKS_APP = bool(os.environ.get("DATABRICKS_APP_NAME"))
 
 WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "4b9b953939869799")
 GENIE_SPACE_ID = os.environ.get("GENIE_SPACE_ID", "")
-CATALOG = os.environ.get("DATABRICKS_CATALOG", "akash_s")
+CATALOG = os.environ.get("DATABRICKS_CATALOG", "hp_sf_test")
 SCHEMA = os.environ.get("DATABRICKS_SCHEMA", "finance_and_accounting")
 
 FMAPI_MODEL = "databricks-claude-sonnet-4-5"

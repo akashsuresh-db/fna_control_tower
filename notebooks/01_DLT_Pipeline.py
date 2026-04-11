@@ -14,8 +14,8 @@ import dlt
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-CATALOG = "akash_s_demo"
-SCHEMA = "finance_and_accounting"
+CATALOG = spark.conf.get("source_catalog", "hp_sf_test")
+SCHEMA = spark.conf.get("source_schema", "finance_and_accounting")
 
 # COMMAND ----------
 

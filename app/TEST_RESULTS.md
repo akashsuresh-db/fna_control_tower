@@ -64,7 +64,7 @@ This report documents comprehensive UX/UI testing of the deployed Databricks Fin
 - **Status:** ✅ Should work - Metrics API implemented
 - **Code Path:** APTab.tsx line 47 → useMetrics("/api/metrics/p2p") → backend/main.py:60
 - **Data Source:** backend/db.py::get_p2p_metrics() queries silver_invoice_exceptions and bronze_p2p_invoices
-- **Notes:** Depends on data existing in akash_s.finance_and_accounting schema
+- **Notes:** Depends on data existing in hp_sf_test.finance_and_accounting schema
 
 #### Test 3: Payment Run Panel Loads
 - **Expected:** Gauges for DPO, Early/On Time/Late payment counts

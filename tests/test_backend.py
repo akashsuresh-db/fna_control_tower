@@ -9,7 +9,7 @@ Run:
 Set env vars before running locally:
     export DATABRICKS_CONFIG_PROFILE=e2-demo-west
     export DATABRICKS_WAREHOUSE_ID=4b9b953939869799
-    export DATABRICKS_CATALOG=akash_s
+    export DATABRICKS_CATALOG=hp_sf_test
     export DATABRICKS_SCHEMA=finance_and_accounting
 """
 

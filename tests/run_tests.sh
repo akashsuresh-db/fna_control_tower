@@ -23,7 +23,7 @@ run_backend() {
   cd "$APP_DIR"
   PYTHONPATH="$(pwd)" \
   DATABRICKS_WAREHOUSE_ID="${DATABRICKS_WAREHOUSE_ID:-4b9b953939869799}" \
-  DATABRICKS_CATALOG="${DATABRICKS_CATALOG:-akash_s}" \
+  DATABRICKS_CATALOG="${DATABRICKS_CATALOG:-hp_sf_test}" \
   DATABRICKS_SCHEMA="${DATABRICKS_SCHEMA:-finance_and_accounting}" \
   /Users/akash.s/miniconda3/bin/pytest "$TESTS_DIR/test_backend.py" -v \
     --tb=short \

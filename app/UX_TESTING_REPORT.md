@@ -48,7 +48,7 @@ The Finance & Accounting Control Tower is a sophisticated multi-dashboard applic
 **Assessment:**
 - Exception detection logic solid (quarantine vs. exception rules)
 - SSE streaming generators well-designed with realistic data flow
-- Database schema: akash_s.finance_and_accounting (Databricks Unity Catalog)
+- Database schema: hp_sf_test.finance_and_accounting (Databricks Unity Catalog)
 - Authentication: x-forwarded-email header injection for user context
 - No backend bugs found in code review
 
@@ -264,7 +264,7 @@ Before going live:
 
 2. **Environment Variables:**
    - [ ] DATABRICKS_WAREHOUSE_ID = "4b9b953939869799" (configured in app.yaml)
-   - [ ] DATABRICKS_CATALOG = "akash_s"
+   - [ ] DATABRICKS_CATALOG = "hp_sf_test"
    - [ ] DATABRICKS_SCHEMA = "finance_and_accounting"
    - [ ] GENIE_SPACE_ID = "" (can be empty for demo)
 

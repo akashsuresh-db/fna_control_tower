@@ -14,7 +14,7 @@ dbutils.library.restartPython()
 import json, requests
 from databricks.sdk import WorkspaceClient
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA = "finance_and_accounting"
 HOST = "https://adb-984752964297111.11.azuredatabricks.net"
 token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
@@ -155,6 +155,6 @@ else:
     print("2. Navigate to: Genie (left sidebar)")
     print("3. Click: New Genie Space")
     print("4. Title: Finance & Accounting Analytics")
-    print("5. Add tables: akash_s_demo.finance_and_accounting.gold_*")
+    print("5. Add tables: hp_sf_test.finance_and_accounting.gold_*")
 
 dbutils.notebook.exit(json.dumps(output))

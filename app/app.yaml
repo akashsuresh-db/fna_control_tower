@@ -5,7 +5,7 @@ env:
   - name: GENIE_SPACE_ID
     value: ""
   - name: DATABRICKS_CATALOG
-    value: "akash_s"
+    value: "hp_sf_test"
   - name: DATABRICKS_SCHEMA
     value: "finance_and_accounting"
   - name: PGHOST

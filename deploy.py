@@ -2,7 +2,7 @@
 """
 Deployment script for Finance & Accounting Demo
 Target: https://westus.azuredatabricks.net (org ID: 2338896885246877)
-Catalog: akash_s | Schema: finance_and_accounting
+Catalog: akash_s_demo | Schema: finance_and_accounting
 """
 import base64
 import json
@@ -16,7 +16,7 @@ import requests
 # ── Config ─────────────────────────────────────────────────────────────────────
 WORKSPACE_HOST = "https://westus.azuredatabricks.net"
 ORG_ID = "2338896885246877"
-CATALOG = "akash_s"
+CATALOG = "akash_s_demo"
 SCHEMA = "finance_and_accounting"
 WAREHOUSE_ID = "e69629978b5a7e40"
 WORKSPACE_NOTEBOOK_DIR = "/Users/akash.s@databricks.com/finance-accounting-demo"

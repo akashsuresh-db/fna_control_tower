@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA = "finance_and_accounting"
 WORKSPACE_URL = "https://adb-984752964297111.11.azuredatabricks.net"
 

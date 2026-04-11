@@ -2,11 +2,11 @@
 # MAGIC %md
 # MAGIC # FINS Source Data Generator
 # MAGIC
-# MAGIC Creates synthetic invoice source data in `akash_s_demo.fins` with deliberately
+# MAGIC Creates synthetic invoice source data in `hp_sf_test.fins` with deliberately
 # MAGIC planted data quality defects. These defects will be caught by DLT expectations
 # MAGIC in the pipeline and routed to the quarantine / exceptions tables.
 # MAGIC
-# MAGIC **Schema**: `akash_s_demo.fins`
+# MAGIC **Schema**: `hp_sf_test.fins`
 # MAGIC
 # MAGIC **Source tables written**:
 # MAGIC - `source_vendor_master` — 30 vendors (25 ACTIVE, 5 INACTIVE)
@@ -26,7 +26,7 @@
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA  = "fins"
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
@@ -48,7 +48,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA  = "fins"
 
 import random

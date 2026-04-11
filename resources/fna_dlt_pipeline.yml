@@ -1,0 +1,16 @@
+resources:
+  pipelines:
+    fna_dlt_pipeline:
+      name: "FnA Control Tower - DLT Bronze to Silver"
+      catalog: ${var.catalog}
+      target: ${var.schema}
+      serverless: true
+      channel: CURRENT
+      development: true
+      continuous: false
+      configuration:
+        source_catalog: ${var.catalog}
+        source_schema: ${var.schema}
+      libraries:
+        - notebook:
+            path: ../notebooks/01_DLT_Pipeline.py

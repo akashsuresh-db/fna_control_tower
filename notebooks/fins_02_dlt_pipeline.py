@@ -35,7 +35,7 @@
 # MAGIC                    └────────────────────────────┘
 # MAGIC ```
 # MAGIC
-# MAGIC **Target catalog**: `akash_s_demo.fins`
+# MAGIC **Target catalog**: `hp_sf_test.fins`
 
 # COMMAND ----------
 
@@ -43,7 +43,7 @@ import dlt
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA  = "fins"
 
 # ─── Quality expectations dict (reused for validated + quarantine) ────────────

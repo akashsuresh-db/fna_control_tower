@@ -8,8 +8,11 @@
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
-SCHEMA = "finance_and_accounting"
+dbutils.widgets.text("catalog", "hp_sf_test", "Unity Catalog")
+dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
 
 spark.sql(f"USE CATALOG {CATALOG}")
 spark.sql(f"USE SCHEMA {SCHEMA}")

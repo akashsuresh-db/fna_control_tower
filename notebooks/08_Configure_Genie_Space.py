@@ -14,7 +14,7 @@ dbutils.library.restartPython()
 import json, requests
 from databricks.sdk import WorkspaceClient
 
-CATALOG = "akash_s_demo"
+CATALOG = "hp_sf_test"
 SCHEMA = "finance_and_accounting"
 HOST = "https://adb-984752964297111.11.azuredatabricks.net"
 SPACE_ID = "01f122c95c741815919b6457017f0899"
