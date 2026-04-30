@@ -19,7 +19,7 @@ dbutils.widgets.text("genie_space_id", "", "Genie Space ID (override; uses task 
 
 # COMMAND ----------
 
-# MAGIC %pip install "langchain>=0.2" "langchain-databricks>=0.4" "langgraph>=0.2" -q
+# MAGIC %pip install langchain langchain-databricks langgraph -q
 
 # COMMAND ----------
 
