@@ -115,14 +115,62 @@ print("✓ Agent built")
 
 # COMMAND ----------
 
-# ── Register agent in Unity Catalog ──────────────────────────────────────────
+# ── Register agent in Unity Catalog via mlflow.pyfunc ────────────────────────
+# mlflow.langchain.log_model only supports legacy LangChain types, not LangGraph
+# CompiledStateGraph. We wrap the agent in a PythonModel instead.
+
+import mlflow.pyfunc
+
+class MASAgentWrapper(mlflow.pyfunc.PythonModel):
+    """Wraps a LangGraph ReAct agent for MLflow pyfunc serving."""
+
+    def load_context(self, context):
+        import json
+        cfg = context.model_config
+        from langchain_databricks import ChatDatabricks
+        from langchain_databricks.genie import GenieTool
+        from langgraph.prebuilt import create_react_agent
+
+        space_id = cfg.get("genie_space_id", "")
+        tools = [GenieTool(space_id=space_id)] if space_id else []
+        llm = ChatDatabricks(endpoint=cfg["claude_endpoint"], temperature=0.1)
+
+        system_prompt = f"""You are the Finance & Accounting Control Tower supervisor.
+You have expertise in P2P, O2C, and R2R finance analytics.
+Use the Genie tool to query the finance data warehouse and ground every answer in data.
+Genie Space ID: {space_id or 'Not configured'}"""
+
+        try:
+            self.agent = create_react_agent(model=llm, tools=tools, state_modifier=system_prompt)
+        except TypeError:
+            self.agent = create_react_agent(model=llm, tools=tools, prompt=system_prompt)
+
+    def predict(self, context, model_input, params=None):
+        import json, pandas as pd
+        if isinstance(model_input, pd.DataFrame):
+            messages = model_input.to_dict(orient="records")
+        elif isinstance(model_input, dict):
+            messages = model_input.get("messages", [])
+        else:
+            messages = list(model_input)
+
+        result = self.agent.invoke({"messages": messages})
+        output_msgs = result.get("messages", [])
+        answer = ""
+        for m in reversed(output_msgs):
+            content = getattr(m, "content", "") or ""
+            if content and "<function_calls>" not in str(content):
+                answer = content
+                break
+        return {"output": answer, "messages": [{"role": "assistant", "content": answer}]}
+
+
 mlflow.set_registry_uri("databricks-uc")
-mlflow.langchain.autolog(disable=True)
 
 with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
-    model_info = mlflow.langchain.log_model(
-        lc_model=agent,
+    model_info = mlflow.pyfunc.log_model(
         artifact_path="agent",
+        python_model=MASAgentWrapper(),
         model_config={
             "genie_space_id": GENIE_SPACE_ID,
             "claude_endpoint": CLAUDE_ENDPOINT,
@@ -133,7 +181,7 @@ with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
             "mlflow>=2.13",
             "langchain>=0.2",
             "langchain-databricks>=0.3",
-            "langgraph>=0.1",
+            "langgraph>=0.2",
         ],
         input_example={
             "messages": [{"role": "user", "content": "Show me the top overdue invoices"}]
