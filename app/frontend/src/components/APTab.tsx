@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, AlertTriangle, Shield, CreditCard, Play, Square,
-  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown, Send
+  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown, Send,
+  Database, Eye
 } from "lucide-react";
 import { useSSE } from "../hooks/useSSE";
 import { useMetrics } from "../hooks/useMetrics";
@@ -11,7 +12,7 @@ import GreetingBanner from "./GreetingBanner";
 import ExceptionDrawer from "./ExceptionDrawer";
 import InvoiceDrawer from "./InvoiceDrawer";
 import SummaryCard from "./SummaryCard";
-import { inr, matchStatusColor, matchStatusBg, matchStatusLabel, formatNum } from "../utils";
+import { inr, matchStatusColor, matchStatusBg, matchStatusLabel, formatNum, dataSourceLabel, dataSourceBadgeClass } from "../utils";
 
 type P2PMetrics = {
   metrics: {
@@ -20,6 +21,7 @@ type P2PMetrics = {
     two_way: number;
     amount_mismatch: number;
     no_po: number;
+    extraction_mismatch: number;
     exceptions: number;
     overdue_count: number;
     total_amount: number;
@@ -51,15 +53,16 @@ export default function APTab({ userName = "User", onNotify }: Props) {
   const [escalating, setEscalating] = useState(false);
   const [showEscalateModal, setShowEscalateModal] = useState(false);
   const [escalateTypes, setEscalateTypes] = useState<Set<string>>(
-    new Set(["AMOUNT_MISMATCH", "NO_PO_REFERENCE", "CRITICAL_OVERDUE", "MISSING_GSTIN"])
+    new Set(["AMOUNT_MISMATCH", "NO_PO_REFERENCE", "EXTRACTION_MISMATCH", "CRITICAL_OVERDUE", "MISSING_GSTIN"])
   );
   const feedRef = useRef<HTMLDivElement>(null);
 
   const EXCEPTION_OPTIONS = [
-    { key: "AMOUNT_MISMATCH",  label: "Amount Mismatch",          severity: "HIGH",     color: "text-db-amber" },
-    { key: "NO_PO_REFERENCE",  label: "No PO Reference",          severity: "HIGH",     color: "text-db-amber" },
-    { key: "CRITICAL_OVERDUE", label: "Critical Overdue (>60d)",  severity: "CRITICAL", color: "text-db-red"   },
-    { key: "MISSING_GSTIN",    label: "Missing GSTIN",            severity: "MEDIUM",   color: "text-yellow-400" },
+    { key: "AMOUNT_MISMATCH",     label: "Amount Mismatch",           severity: "HIGH",     color: "text-db-amber"   },
+    { key: "NO_PO_REFERENCE",     label: "No PO Reference",           severity: "HIGH",     color: "text-db-amber"   },
+    { key: "EXTRACTION_MISMATCH", label: "AI Extraction Mismatch",    severity: "CRITICAL", color: "text-purple-400" },
+    { key: "CRITICAL_OVERDUE",    label: "Critical Overdue (>60d)",   severity: "CRITICAL", color: "text-db-red"     },
+    { key: "MISSING_GSTIN",       label: "Missing GSTIN",             severity: "MEDIUM",   color: "text-yellow-400" },
   ];
 
   function toggleEscalateType(key: string) {
@@ -193,11 +196,13 @@ export default function APTab({ userName = "User", onNotify }: Props) {
           <div ref={feedRef} className="flex-1 overflow-y-auto p-2 space-y-1.5">
             <AnimatePresence initial={false}>
               {invoices.map((evt, i) => {
-                const d = evt.data as Record<string, string | number>;
+                const d = evt.data as Record<string, string | number | null>;
                 const status = (d.match_status || "") as string;
                 const invId = d.invoice_id as string;
                 const isActioned = approvedIds.has(invId);
-                const needsAction = status === "AMOUNT_MISMATCH" || status === "NO_PO_REFERENCE";
+                const needsAction = status === "AMOUNT_MISMATCH" || status === "NO_PO_REFERENCE" || status === "EXTRACTION_MISMATCH";
+                const dataSource = (d.data_source as string) || "ERP_ONLY";
+                const hasPdf = !!(d.pdf_file_path as string);
                 return (
                   <motion.div
                     key={`${d.invoice_id}-${i}`}
@@ -209,20 +214,24 @@ export default function APTab({ userName = "User", onNotify }: Props) {
                       status === "THREE_WAY_MATCHED" ? "match-success" : ""
                     } ${isActioned ? "" : matchStatusBg(status)}`}
                     onClick={() => {
-                      const exc = stream.exceptions.find(
-                        (e) => (e.data as Record<string, unknown>).invoice_id === d.invoice_id
-                      );
-                      if (exc) setSelectedEx(exc);
+                      // Open the InvoiceDrawer to view source document
+                      setOpenInvoiceId(invId);
                     }}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="font-mono text-xs text-text-muted">{d.invoice_id as string}</span>
+                        {/* Data source badge — shows which systems contributed data */}
+                        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border flex-shrink-0 ${dataSourceBadgeClass(dataSource)}`}>
+                          <Database className="w-2.5 h-2.5" />
+                          {dataSourceLabel(dataSource)}
+                          {hasPdf && <FileText className="w-2.5 h-2.5 ml-0.5" />}
+                        </span>
                         <span className="text-sm text-text-primary truncate font-medium">
                           {d.vendor_name as string}
                         </span>
                       </div>
-                      <div className="flex items-center gap-3 flex-shrink-0">
+                      <div className="flex items-center gap-2 flex-shrink-0">
                         <span className="text-sm font-semibold tabular-nums">{inr(d.invoice_total_inr)}</span>
                         {isActioned ? (
                           <span className="text-xs font-medium px-2 py-0.5 rounded text-db-green">
@@ -239,6 +248,16 @@ export default function APTab({ userName = "User", onNotify }: Props) {
                               matchStatusLabel(status)
                             )}
                           </span>
+                        )}
+                        {/* View PDF button — only shown when a source PDF exists */}
+                        {hasPdf && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setOpenInvoiceId(invId); }}
+                            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium bg-teal-500/10 border border-teal-500/20 text-teal-400 hover:bg-teal-500/20 transition"
+                            title="View source PDF"
+                          >
+                            <Eye className="w-3 h-3" /> PDF
+                          </button>
                         )}
                       </div>
                     </div>

@@ -12,9 +12,10 @@
 
 # COMMAND ----------
 
-CATALOG = "hp_sf_test"
+CATALOG = "fna_control_tower"
 SCHEMA = "finance_and_accounting"
-WORKSPACE_URL = "https://adb-984752964297111.11.azuredatabricks.net"
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+WORKSPACE_URL = ctx.apiUrl().get().rstrip("/")
 
 # COMMAND ----------
 

@@ -1,0 +1,6 @@
+# Foundation model endpoints (e.g. databricks-claude-sonnet-4-5) are platform-provided
+# and already exist in the workspace. No need to create them via the bundle.
+# The app references the endpoint by name via ${var.claude_endpoint_name}.
+#
+# If a custom MAS supervisor endpoint is needed, it is created by ETL task 09
+# (09_Deploy_MAS_Supervisor.py) which registers an MLflow model and deploys it.

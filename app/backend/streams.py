@@ -44,6 +44,14 @@ def _detect_p2p_exceptions(inv: dict) -> list[dict]:
             "reason": "Invoice has no Purchase Order reference — cannot perform 3-way match",
             "resolution": "Route to AP supervisor for manual PO assignment or rejection.",
         })
+    if ms == "EXTRACTION_MISMATCH":
+        exceptions.append({
+            "type": "quarantine",
+            "rule": "pdf_amount_match",
+            "severity": "critical",
+            "reason": "AI extraction: PDF invoice amount does not match ERP-recorded amount — possible tampering or OCR error",
+            "resolution": "Pull the source PDF and compare against ERP entry. Escalate to AP Supervisor if fraud is suspected.",
+        })
     if str(inv.get("is_overdue", "")).lower() == "true":
         age = inv.get("aging_days", 0)
         if age and int(age) > 60:
@@ -142,7 +150,7 @@ async def stream_p2p() -> AsyncGenerator[str, None]:
 
     # Morning greeting
     total = len(invoices)
-    exceptions_count = sum(1 for i in invoices if i.get("match_status") in ("AMOUNT_MISMATCH", "NO_PO_REFERENCE"))
+    exceptions_count = sum(1 for i in invoices if i.get("match_status") in ("AMOUNT_MISMATCH", "NO_PO_REFERENCE", "EXTRACTION_MISMATCH"))
     overdue_count = sum(1 for i in invoices if str(i.get("is_overdue", "")).lower() == "true")
     total_amount = sum(float(i.get("invoice_total_inr", 0) or 0) for i in invoices)
 

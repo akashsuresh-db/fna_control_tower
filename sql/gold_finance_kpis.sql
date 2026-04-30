@@ -1,7 +1,7 @@
 -- =============================================================
 -- gold_finance_kpis
 -- Finance & Accounting — Unified KPI Metrics View
--- Catalog: hp_sf_test | Schema: finance_and_accounting
+-- Catalog: fna_control_tower | Schema: finance_and_accounting
 --
 -- Returns ONE row per snapshot with all key metrics
 -- across P2P, O2C, and R2R, plus cross-process working capital.
@@ -14,7 +14,7 @@
 --   "How much AP is overdue?"
 -- =============================================================
 
-CREATE OR REPLACE VIEW hp_sf_test.finance_and_accounting.gold_finance_kpis
+CREATE OR REPLACE VIEW fna_control_tower.finance_and_accounting.gold_finance_kpis
 COMMENT 'Unified finance KPI snapshot covering P2P, O2C, and R2R metrics. One row per snapshot date. Use this view to answer questions about DSO, DPO, touchless rate, AP/AR balances, aging, and working capital.'
 AS
 
@@ -51,7 +51,7 @@ p2p AS (
     AVG(invoice_total_inr)                                                       AS avg_invoice_amount_inr,
     AVG(CASE WHEN invoice_status = 'PAID' THEN days_to_pay END)                 AS avg_days_to_pay
 
-  FROM hp_sf_test.finance_and_accounting.gold_fact_invoices
+  FROM fna_control_tower.finance_and_accounting.gold_fact_invoices
 ),
 
 -- ── P2P: DPO — Days Payable Outstanding ───────────────────────
@@ -63,7 +63,7 @@ dpo AS (
              SUM(CASE WHEN invoice_status != 'PAID' THEN invoice_total_inr ELSE 0 END)
              / SUM(invoice_total_inr) * 90, 1)
     END AS dpo_days
-  FROM hp_sf_test.finance_and_accounting.gold_fact_invoices
+  FROM fna_control_tower.finance_and_accounting.gold_fact_invoices
 ),
 
 -- ── O2C: Collections-level aggregation ────────────────────────
@@ -85,7 +85,7 @@ o2c AS (
     AVG(CASE WHEN is_fully_collected THEN days_to_collect END)                       AS avg_days_to_collect,
     AVG(CASE WHEN days_overdue > 0   THEN days_overdue    END)                       AS avg_days_overdue
 
-  FROM hp_sf_test.finance_and_accounting.gold_fact_collections
+  FROM fna_control_tower.finance_and_accounting.gold_fact_collections
 ),
 
 -- ── O2C: DSO + Collection Rate ────────────────────────────────
@@ -99,7 +99,7 @@ dso AS (
       WHEN SUM(invoice_total_inr) > 0
       THEN ROUND(SUM(amount_collected_inr) / SUM(invoice_total_inr) * 100, 1)
     END AS collection_rate_pct
-  FROM hp_sf_test.finance_and_accounting.gold_fact_collections
+  FROM fna_control_tower.finance_and_accounting.gold_fact_collections
 ),
 
 -- ── O2C: Revenue from Sales ────────────────────────────────────
@@ -110,7 +110,7 @@ revenue AS (
     AVG(so_total_inr)                                            AS avg_order_value_inr,
     COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END)             AS completed_orders,
     SUM(CASE WHEN status = 'COMPLETED' THEN so_total_inr END)    AS completed_revenue_inr
-  FROM hp_sf_test.finance_and_accounting.gold_fact_sales
+  FROM fna_control_tower.finance_and_accounting.gold_fact_sales
 ),
 
 -- ── O2C: Customer health ──────────────────────────────────────
@@ -120,7 +120,7 @@ overdue_customers AS (
     COUNT(CASE WHEN credit_utilization_pct > 90   THEN 1 END)   AS customers_near_credit_limit,
     COUNT(CASE WHEN dso > 60                      THEN 1 END)   AS customers_high_dso,
     COUNT(*)                                                     AS total_active_customers
-  FROM hp_sf_test.finance_and_accounting.gold_dim_customer
+  FROM fna_control_tower.finance_and_accounting.gold_dim_customer
   WHERE is_active = true
 ),
 
@@ -133,7 +133,7 @@ gl AS (
     SUM(credit_inr)                                              AS total_credits_inr,
     ABS(SUM(debit_inr) - SUM(credit_inr))                       AS gl_imbalance_inr,
     MAX(je_date)                                                 AS last_je_date
-  FROM hp_sf_test.finance_and_accounting.gold_fact_gl
+  FROM fna_control_tower.finance_and_accounting.gold_fact_gl
 ),
 
 -- ── R2R: Trial balance (latest period) ───────────────────────
@@ -144,9 +144,9 @@ tb AS (
     SUM(CASE WHEN account_type = 'Equity'    THEN closing_balance_inr ELSE 0 END)  AS total_equity_inr,
     SUM(CASE WHEN account_type = 'Revenue'   THEN closing_balance_inr ELSE 0 END)  AS total_revenue_gl_inr,
     SUM(CASE WHEN account_type = 'Expense'   THEN closing_balance_inr ELSE 0 END)  AS total_expenses_inr
-  FROM hp_sf_test.finance_and_accounting.gold_fact_trial_balance
+  FROM fna_control_tower.finance_and_accounting.gold_fact_trial_balance
   WHERE period = (
-    SELECT MAX(period) FROM hp_sf_test.finance_and_accounting.gold_fact_trial_balance
+    SELECT MAX(period) FROM fna_control_tower.finance_and_accounting.gold_fact_trial_balance
   )
 )
 

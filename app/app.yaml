@@ -1,31 +1,26 @@
 command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Runtime configuration injected at bundle deploy time.
+# Update these values when deploying to a new target workspace.
+# SERVING_ENDPOINT_NAME is updated by setup.py after the MAS supervisor is created.
 env:
   - name: DATABRICKS_WAREHOUSE_ID
-    value: "4b9b953939869799"
-  - name: GENIE_SPACE_ID
-    value: ""
+    value: "ff4426268a522c62"
   - name: DATABRICKS_CATALOG
-    value: "hp_sf_test"
+    value: "fna_control_tower"
   - name: DATABRICKS_SCHEMA
     value: "finance_and_accounting"
-  - name: PGHOST
-    value: "ep-mute-dew-d1b8fz0c.database.us-west-2.cloud.databricks.com"
-  - name: PGUSER
-    value: "aba1ec33-e4db-47b2-9c51-60eef4a6603f"
-  - name: PGDATABASE
-    value: "finance_ops_app"
-  - name: PGPORT
-    value: "5432"
-  - name: PGSSLMODE
-    value: "require"
-  - name: LAKEBASE_INSTANCE_NAME
-    value: "finance-ops-db"
   - name: ESCALATION_RECIPIENT
     value: "akash.s@databricks.com"
+  - name: SERVING_ENDPOINT_NAME
+    value: "mas-2dcd8d5a-endpoint"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "finance-ops-db"
+
 resources:
   - name: sql-warehouse
     sql_warehouse:
-      id: "4b9b953939869799"
+      id: "ff4426268a522c62"
       permission: CAN_USE
   - name: claude-endpoint
     serving_endpoint:
@@ -33,9 +28,10 @@ resources:
       permission: CAN_QUERY
   - name: mas-supervisor
     serving_endpoint:
-      name: "mas-3744e932-endpoint"
+      name: "mas-2dcd8d5a-endpoint"
       permission: CAN_QUERY
-  - name: finance-ops-db
-    database_instance:
-      name: "finance-ops-db"
-      permission: CAN_USE
+  - name: lakebase-conn
+    database:
+      instance_name: "finance-ops-db"
+      database_name: "databricks_postgres"
+      permission: CAN_CONNECT_AND_CREATE

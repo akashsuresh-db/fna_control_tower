@@ -1,33 +1,34 @@
 bundle:
   name: fna-control-tower
+  engine: direct
 
 variables:
   catalog:
     description: "Unity Catalog name for all tables and volumes"
-    default: hp_sf_test
+    default: fna_control_tower
 
   schema:
     description: "Schema within the catalog for finance & accounting data"
     default: finance_and_accounting
-
-  warehouse_id:
-    description: "SQL Warehouse ID for queries and app"
-    default: "4b9b953939869799"
 
   escalation_recipient:
     description: "Email address for AP escalation alerts"
     default: "akash.s@databricks.com"
 
   genie_space_id:
-    description: "Genie Space ID (leave empty to skip)"
+    description: "Genie Space ID (leave empty to skip; Genie Spaces cannot be bundle-created)"
     default: ""
 
   serving_endpoint_name:
-    description: "Model serving endpoint for AI chat"
-    default: "mas-3744e932-endpoint"
+    description: "MAS supervisor model serving endpoint (created by ETL task 09)"
+    default: "mas-fna-supervisor"
+
+  claude_endpoint_name:
+    description: "Claude model serving endpoint (platform-provided foundation model)"
+    default: "databricks-claude-sonnet-4-5"
 
   lakebase_instance_name:
-    description: "Lakebase (Postgres) instance name for operational state"
+    description: "Lakebase (Postgres) instance name for persistent chat/approval/call-log storage"
     default: "finance-ops-db"
 
 include:
@@ -39,6 +40,20 @@ targets:
     mode: development
     workspace:
       root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/dev
+
+  fevm:
+    # No mode: development — resources use exact project-specific names with no dev prefix.
+    # All infrastructure is bundle-created fresh; no pre-existing workspace resources referenced.
+    workspace:
+      host: https://adb-7405605456174026.6.azuredatabricks.net
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/fevm
+    variables:
+      escalation_recipient: akash.s@databricks.com
+      serving_endpoint_name: mas-2dcd8d5a-endpoint
+      claude_endpoint_name: databricks-claude-sonnet-4-5
+      # catalog:               fna_control_tower
+      # schema:                finance_and_accounting
+      # lakebase_instance_name: finance-ops-db
 
   prod:
     mode: production

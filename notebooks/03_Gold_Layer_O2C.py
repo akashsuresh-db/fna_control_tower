@@ -9,7 +9,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "hp_sf_test", "Unity Catalog")
+dbutils.widgets.text("catalog", "fna_control_tower", "Unity Catalog")
 dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
 
 CATALOG = dbutils.widgets.get("catalog")

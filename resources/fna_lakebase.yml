@@ -1,0 +1,5 @@
+resources:
+  database_instances:
+    fna_lakebase:
+      name: ${var.lakebase_instance_name}
+      capacity: CU_1

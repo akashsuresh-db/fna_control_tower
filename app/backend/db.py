@@ -42,12 +42,13 @@ def query(sql: str, params: dict | None = None) -> list[dict[str, Any]]:
 def _get_demo_invoices(limit: int = 200) -> list[dict]:
     """Return demo invoices."""
     invoices = [
-        {"invoice_id": "INV001001", "invoice_number": "VINV-2025-50101", "vendor_name": "TechSupply Corp", "vendor_category": "IT Equipment", "invoice_date": "2025-03-01", "due_date": "2025-04-01", "invoice_amount": 450000, "tax_amount": 81000, "invoice_total_inr": 531000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 7, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1001", "gstin_vendor": "29AABCT1234H1Z2"},
-        {"invoice_id": "INV001002", "invoice_number": "VINV-2025-50102", "vendor_name": "Office Solutions", "vendor_category": "Office Supplies", "invoice_date": "2025-03-02", "due_date": "2025-04-02", "invoice_amount": 125000, "tax_amount": 22500, "invoice_total_inr": 147500, "match_status": "AMOUNT_MISMATCH", "has_po_ref": True, "is_overdue": False, "aging_days": 6, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1002", "gstin_vendor": "28AACCT5678H2Z3"},
-        {"invoice_id": "INV001003", "invoice_number": "VINV-2025-50103", "vendor_name": "Global Services", "vendor_category": "Consulting", "invoice_date": "2025-02-15", "due_date": "2025-03-15", "invoice_amount": 850000, "tax_amount": 0, "invoice_total_inr": 850000, "match_status": "NO_PO_REFERENCE", "has_po_ref": False, "is_overdue": True, "aging_days": 23, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": None, "gstin_vendor": None},
-        {"invoice_id": "INV001004", "invoice_number": "VINV-2025-50104", "vendor_name": "Logistics Plus", "vendor_category": "Transportation", "invoice_date": "2025-01-10", "due_date": "2025-02-10", "invoice_amount": 275000, "tax_amount": 49500, "invoice_total_inr": 324500, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": True, "aging_days": 56, "aging_bucket": "31-60 days", "invoice_status": "PENDING", "po_id": "PO-2025-1004", "gstin_vendor": "18AABCR1234K2Z0"},
-        {"invoice_id": "INV001005", "invoice_number": "VINV-2025-50105", "vendor_name": "Raw Materials Ltd", "vendor_category": "Raw Materials", "invoice_date": "2025-02-28", "due_date": "2025-03-28", "invoice_amount": 1200000, "tax_amount": 216000, "invoice_total_inr": 1416000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 10, "aging_bucket": "0-30 days", "invoice_status": "APPROVED", "po_id": "PO-2025-1005", "gstin_vendor": "27AABCT8901H3Z1"},
-        {"invoice_id": "INV001006", "invoice_number": "VINV-2025-50106", "vendor_name": "Equipment Rental", "vendor_category": "Equipment", "invoice_date": "2025-03-05", "due_date": "2025-04-05", "invoice_amount": 350000, "tax_amount": 63000, "invoice_total_inr": 413000, "match_status": "TWO_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 2, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1006", "gstin_vendor": "22AABCT1234H4Z2"},
+        {"invoice_id": "INV001001", "invoice_number": "VINV-2025-50101", "vendor_name": "TechSupply Corp", "vendor_category": "IT Equipment", "invoice_date": "2025-03-01", "due_date": "2025-04-01", "invoice_amount": 450000, "tax_amount": 81000, "invoice_total_inr": 531000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 7, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1001", "gstin_vendor": "29AABCT1234H1Z2", "data_source": "ERP_AND_PDF", "pdf_file_path": "/Volumes/fna_control_tower/finance_and_accounting/raw_invoices/INV001001.pdf"},
+        {"invoice_id": "INV001002", "invoice_number": "VINV-2025-50102", "vendor_name": "Office Solutions", "vendor_category": "Office Supplies", "invoice_date": "2025-03-02", "due_date": "2025-04-02", "invoice_amount": 125000, "tax_amount": 22500, "invoice_total_inr": 147500, "match_status": "AMOUNT_MISMATCH", "has_po_ref": True, "is_overdue": False, "aging_days": 6, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1002", "gstin_vendor": "28AACCT5678H2Z3", "data_source": "ERP_AND_PDF", "pdf_file_path": "/Volumes/fna_control_tower/finance_and_accounting/raw_invoices/INV001002.pdf"},
+        {"invoice_id": "INV001003", "invoice_number": "VINV-2025-50103", "vendor_name": "Global Services", "vendor_category": "Consulting", "invoice_date": "2025-02-15", "due_date": "2025-03-15", "invoice_amount": 850000, "tax_amount": 0, "invoice_total_inr": 850000, "match_status": "NO_PO_REFERENCE", "has_po_ref": False, "is_overdue": True, "aging_days": 23, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": None, "gstin_vendor": None, "data_source": "ERP_ONLY", "pdf_file_path": None},
+        {"invoice_id": "INV001004", "invoice_number": "VINV-2025-50104", "vendor_name": "Logistics Plus", "vendor_category": "Transportation", "invoice_date": "2025-01-10", "due_date": "2025-02-10", "invoice_amount": 275000, "tax_amount": 49500, "invoice_total_inr": 324500, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": True, "aging_days": 56, "aging_bucket": "31-60 days", "invoice_status": "PENDING", "po_id": "PO-2025-1004", "gstin_vendor": "18AABCR1234K2Z0", "data_source": "ERP_AND_PDF", "pdf_file_path": "/Volumes/fna_control_tower/finance_and_accounting/raw_invoices/INV001004.pdf"},
+        {"invoice_id": "INV001005", "invoice_number": "VINV-2025-50105", "vendor_name": "Raw Materials Ltd", "vendor_category": "Raw Materials", "invoice_date": "2025-02-28", "due_date": "2025-03-28", "invoice_amount": 1200000, "tax_amount": 216000, "invoice_total_inr": 1416000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 10, "aging_bucket": "0-30 days", "invoice_status": "APPROVED", "po_id": "PO-2025-1005", "gstin_vendor": "27AABCT8901H3Z1", "data_source": "ERP_AND_PDF", "pdf_file_path": "/Volumes/fna_control_tower/finance_and_accounting/raw_invoices/INV001005.pdf"},
+        {"invoice_id": "INV001006", "invoice_number": "VINV-2025-50106", "vendor_name": "Equipment Rental", "vendor_category": "Equipment", "invoice_date": "2025-03-05", "due_date": "2025-04-05", "invoice_amount": 350000, "tax_amount": 63000, "invoice_total_inr": 413000, "match_status": "TWO_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 2, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1006", "gstin_vendor": "22AABCT1234H4Z2", "data_source": "ERP_ONLY", "pdf_file_path": None},
+        {"invoice_id": "INV001007", "invoice_number": "VINV-2025-50107", "vendor_name": "Infra Supplies Pvt Ltd", "vendor_category": "Facilities", "invoice_date": "2025-03-06", "due_date": "2025-04-06", "invoice_amount": 680000, "tax_amount": 122400, "invoice_total_inr": 802400, "match_status": "EXTRACTION_MISMATCH", "has_po_ref": True, "is_overdue": False, "aging_days": 3, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1007", "gstin_vendor": "33AABCI5678H3Z1", "data_source": "ERP_AND_PDF", "pdf_file_path": "/Volumes/fna_control_tower/finance_and_accounting/raw_invoices/INV001007.pdf"},
     ]
     return invoices[:limit]
 
@@ -60,7 +61,8 @@ def get_invoices(limit: int = 200) -> list[dict]:
         SELECT invoice_id, invoice_number, vendor_name, vendor_category,
                invoice_date, due_date, invoice_amount, tax_amount,
                invoice_total_inr, match_status, has_po_ref, is_overdue,
-               aging_days, aging_bucket, invoice_status, po_id, gstin_vendor
+               aging_days, aging_bucket, invoice_status, po_id, gstin_vendor,
+               pdf_file_path, data_source
         FROM {full_table('gold_fact_invoices')}
         ORDER BY invoice_date DESC
         LIMIT {limit}
@@ -71,16 +73,17 @@ def _get_p2p_demo_metrics() -> dict:
     """Return demo P2P metrics."""
     return {
         "total_invoices": 142,
-        "matched": 118,
+        "matched": 111,
         "two_way": 15,
         "amount_mismatch": 5,
         "no_po": 4,
-        "exceptions": 9,
+        "extraction_mismatch": 7,
+        "exceptions": 16,
         "overdue_count": 8,
         "total_amount": 47_500_000,
         "overdue_amount": 2_100_000,
         "avg_aging_days": 21.5,
-        "touchless_rate": 83.1,
+        "touchless_rate": 78.2,
     }
 
 def get_p2p_metrics() -> dict:
@@ -95,6 +98,7 @@ def get_p2p_metrics() -> dict:
             SUM(CASE WHEN match_status = 'AMOUNT_MISMATCH' THEN 1 ELSE 0 END) as amount_mismatch,
             SUM(CASE WHEN match_status = 'NO_PO_REFERENCE' THEN 1 ELSE 0 END) as no_po,
             SUM(CASE WHEN match_status = 'TWO_WAY_MATCHED' THEN 1 ELSE 0 END) as two_way,
+            SUM(CASE WHEN match_status = 'EXTRACTION_MISMATCH' THEN 1 ELSE 0 END) as extraction_mismatch,
             SUM(CASE WHEN is_overdue = true THEN 1 ELSE 0 END) as overdue_count,
             SUM(invoice_total_inr) as total_amount,
             SUM(CASE WHEN is_overdue = true THEN invoice_total_inr ELSE 0 END) as overdue_amount,
@@ -104,14 +108,15 @@ def get_p2p_metrics() -> dict:
     """)
     if rows:
         r = rows[0]
-        # Count exceptions
-        exceptions = (r.get("amount_mismatch") or 0) + (r.get("no_po") or 0)
+        # Count all exception types
+        exceptions = (r.get("amount_mismatch") or 0) + (r.get("no_po") or 0) + (r.get("extraction_mismatch") or 0)
         return {
             "total_invoices": r.get("total_invoices", 0),
             "matched": r.get("matched", 0),
             "two_way": r.get("two_way", 0),
             "amount_mismatch": r.get("amount_mismatch", 0),
             "no_po": r.get("no_po", 0),
+            "extraction_mismatch": r.get("extraction_mismatch", 0),
             "exceptions": exceptions,
             "overdue_count": r.get("overdue_count", 0),
             "total_amount": float(r.get("total_amount", 0) or 0),

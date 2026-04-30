@@ -53,21 +53,32 @@ def _fresh_token() -> str:
     return os.environ.get("PGPASSWORD") or os.environ.get("LAKEBASE_PASSWORD", "")
 
 
+# Schema within databricks_postgres that the app SP owns.
+# The public schema is restricted in Lakebase; each app gets its own namespace.
+_APP_SCHEMA = "fna_ops"
+
+
 def _get_conn():
-    """Get a psycopg2 connection to Lakebase with a freshly generated token."""
+    """Get a psycopg2 connection to Lakebase with a freshly generated token.
+    Sets search_path to _APP_SCHEMA so all unqualified table references resolve there.
+    """
     import psycopg2
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST"),
         port=int(os.environ.get("PGPORT") or os.environ.get("LAKEBASE_PORT", "5432")),
-        database=os.environ.get("PGDATABASE") or os.environ.get("LAKEBASE_DATABASE", "postgres"),
+        database=os.environ.get("PGDATABASE") or os.environ.get("LAKEBASE_DATABASE", "databricks_postgres"),
         user=os.environ.get("PGUSER") or os.environ.get("LAKEBASE_USER"),
         password=_fresh_token(),
         sslmode=os.environ.get("PGSSLMODE", "require"),
+        options=f"-c search_path={_APP_SCHEMA},public",
     )
+    return conn
 
 
 _DDL_STATEMENTS = [
-    """CREATE TABLE IF NOT EXISTS ap_approvals (
+    # Create dedicated schema — SP is the owner, so it has full CREATE rights here.
+    f"CREATE SCHEMA IF NOT EXISTS {_APP_SCHEMA}",
+    f"""CREATE TABLE IF NOT EXISTS {_APP_SCHEMA}.ap_approvals (
         id SERIAL PRIMARY KEY,
         invoice_id VARCHAR(50),
         action VARCHAR(20),
@@ -75,7 +86,7 @@ _DDL_STATEMENTS = [
         approved_by VARCHAR(100),
         approved_at TIMESTAMP DEFAULT NOW()
     )""",
-    """CREATE TABLE IF NOT EXISTS ar_call_logs (
+    f"""CREATE TABLE IF NOT EXISTS {_APP_SCHEMA}.ar_call_logs (
         id SERIAL PRIMARY KEY,
         customer_id VARCHAR(50),
         customer_name VARCHAR(200),
@@ -85,7 +96,7 @@ _DDL_STATEMENTS = [
         logged_by VARCHAR(100),
         logged_at TIMESTAMP DEFAULT NOW()
     )""",
-    """CREATE TABLE IF NOT EXISTS chat_history (
+    f"""CREATE TABLE IF NOT EXISTS {_APP_SCHEMA}.chat_history (
         id SERIAL PRIMARY KEY,
         session_id VARCHAR(100),
         user_email VARCHAR(200),
@@ -98,10 +109,10 @@ _DDL_STATEMENTS = [
         previous_response_id VARCHAR(200),
         asked_at TIMESTAMP DEFAULT NOW()
     )""",
-    "CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(session_id, asked_at ASC)",
-    "CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_history(user_email, asked_at DESC)",
-    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS routing_info JSONB",
-    "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS previous_response_id VARCHAR(200)",
+    f"CREATE INDEX IF NOT EXISTS idx_chat_session ON {_APP_SCHEMA}.chat_history(session_id, asked_at ASC)",
+    f"CREATE INDEX IF NOT EXISTS idx_chat_user ON {_APP_SCHEMA}.chat_history(user_email, asked_at DESC)",
+    f"ALTER TABLE {_APP_SCHEMA}.chat_history ADD COLUMN IF NOT EXISTS routing_info JSONB",
+    f"ALTER TABLE {_APP_SCHEMA}.chat_history ADD COLUMN IF NOT EXISTS previous_response_id VARCHAR(200)",
 ]
 
 
@@ -126,11 +137,11 @@ def init_schema():
                     try:
                         cur.execute(stmt)
                     except Exception as ddl_err:
-                        # Likely no CREATE privilege — check tables already exist
+                        # Likely a pre-existing table or privilege issue — verify core table exists
                         conn.rollback()
                         print(f"DDL skipped (pre-created or no privilege): {ddl_err}")
                         try:
-                            cur.execute("SELECT 1 FROM chat_history LIMIT 1")
+                            cur.execute(f"SELECT 1 FROM {_APP_SCHEMA}.chat_history LIMIT 1")
                             print("chat_history table confirmed to exist")
                         except Exception as verify_err:
                             raise RuntimeError(

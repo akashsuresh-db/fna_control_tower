@@ -1,0 +1,19 @@
+# Catalog and schema are bundle-created. On managed metastores (FEVM, standard workspaces)
+# CREATE CATALOG does not require an explicit storage location.
+#
+# If your metastore requires a storage location, comment this block out and create
+# the catalog manually:
+#   CREATE CATALOG fna_control_tower MANAGED LOCATION 'abfss://...';
+#   CREATE SCHEMA  fna_control_tower.finance_and_accounting;
+
+resources:
+  catalogs:
+    fna_catalog:
+      name: ${var.catalog}
+      comment: "Finance & Accounting Control Tower - Unity Catalog"
+
+  schemas:
+    fna_schema:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: "Finance & Accounting data schema for AP/AR/GL pipelines"

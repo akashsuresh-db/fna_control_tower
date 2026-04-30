@@ -5,7 +5,7 @@
 # MAGIC This notebook generates all synthetic datasets for P2P, O2C, and R2R workflows.
 # MAGIC Covers: Vendors, POs, GRNs, Invoices, Customers, Sales Orders, GL, Journal Entries
 # MAGIC
-# MAGIC **Catalog**: hp_sf_test
+# MAGIC **Catalog**: fna_control_tower
 # MAGIC **Schema**: finance_and_accounting
 
 # COMMAND ----------
@@ -14,7 +14,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "hp_sf_test", "Unity Catalog")
+dbutils.widgets.text("catalog", "fna_control_tower", "Unity Catalog")
 dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
 
 CATALOG = dbutils.widgets.get("catalog")
@@ -37,7 +37,7 @@ print(f"Volume: {VOLUME_PATH}")
 
 # COMMAND ----------
 
-# MAGIC %pip install faker
+# MAGIC %pip install faker reportlab
 
 # COMMAND ----------
 
@@ -699,30 +699,47 @@ print(f"JE Lines: {je_lines_df.count()} rows")
 
 # COMMAND ----------
 
-def generate_raw_invoice_text(inv):
-    vendor = random.choice(vendors)
-    lines = []
-    num_items = random.randint(1, 5)
-    subtotal = 0
+def _build_invoice_text(inv, vendor, tamper_factor=1.0):
+    """Generate formatted TAX INVOICE text using actual ERP amounts.
 
-    items_text = ""
+    tamper_factor != 1.0 simulates a fraudulent/erroneous PDF where the stated
+    total differs from the ERP-recorded amount — triggering EXTRACTION_MISMATCH.
+    """
+    subtotal_erp = inv["invoice_amount"]
+    tax_erp = inv["tax_amount"]
+
+    # Split subtotal into 1–3 realistic line items
+    num_items = random.randint(1, 3)
+    line_items = []
+    remaining = subtotal_erp
     for k in range(1, num_items + 1):
         desc = fake.catch_phrase()
-        qty = random.randint(1, 20)
-        rate = round(random.uniform(1000, 50000), 2)
-        amount = round(qty * rate, 2)
-        subtotal += amount
-        items_text += f"\n  {k}. {desc:<45} Qty: {qty:>3}  Rate: {rate:>10,.2f}  Amount: {amount:>12,.2f}"
+        if k < num_items:
+            amount = round(remaining * random.uniform(0.25, 0.65), 2)
+            remaining = round(remaining - amount, 2)
+        else:
+            amount = remaining
+        qty = random.randint(1, 10)
+        rate = round(amount / max(qty, 1), 2)
+        line_items.append((k, desc, qty, rate, amount))
 
-    gst_rate = random.choice([5, 12, 18, 28])
-    cgst = round(subtotal * gst_rate / 200, 2)
-    sgst = round(subtotal * gst_rate / 200, 2)
-    total = round(subtotal + cgst + sgst, 2)
+    subtotal = subtotal_erp
+    # Derive GST rate from ERP amounts (always 18% per data generation, so 9% each side)
+    gst_rate = round(tax_erp / max(subtotal_erp, 1) * 100)
+    cgst = round(tax_erp / 2, 2)
+    sgst = round(tax_erp - cgst, 2)
+    # Apply tamper factor: tampered PDFs overstate the total (fraud/error signal)
+    total = round(inv["total_amount"] * tamper_factor, 2)
 
     inv_date = datetime.strptime(inv["invoice_date"], "%Y-%m-%d").date()
-    due_date = inv_date + timedelta(days=30)
+    due_date = datetime.strptime(inv["due_date"], "%Y-%m-%d").date()
 
-    text = f"""
+    items_text = ""
+    for k, desc, qty, rate, amount in line_items:
+        items_text += f"\n  {k}. {desc:<45} Qty: {qty:>3}  Rate: {rate:>10,.2f}  Amount: {amount:>12,.2f}"
+
+    return {
+        "text": f"""
 ================================================================================
                             TAX INVOICE
 ================================================================================
@@ -753,36 +770,185 @@ Payment Details:
 Declaration: I/We hereby certify that the goods/services mentioned above
 have been supplied and the payment mentioned is legally due.
 ================================================================================
-"""
-    return text
+""",
+        "subtotal": subtotal, "cgst": cgst, "sgst": sgst, "total": total,
+        "inv_date": inv_date, "due_date": due_date,
+    }
 
-# Generate raw invoice files and store structured JSON in bronze
+
+def generate_invoice_pdf(inv, vendor, tamper_factor=1.0) -> bytes:
+    """
+    Generate a PDF for an invoice using reportlab.
+    The PDF embeds a human-readable TAX INVOICE that ai_parse_document can extract.
+    tamper_factor: multiply stated total by this value to simulate tampered invoices.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+    from reportlab.lib.units import mm
+    import io
+
+    data = _build_invoice_text(inv, vendor, tamper_factor=tamper_factor)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=20*mm, rightMargin=20*mm,
+                            topMargin=15*mm, bottomMargin=15*mm)
+
+    W = A4[0] - 40*mm
+    DB_NAVY  = colors.HexColor("#003159")
+    GREY     = colors.HexColor("#374151")
+    GREY_LT  = colors.HexColor("#F3F4F6")
+    WHITE    = colors.white
+
+    normal = ParagraphStyle("n", fontName="Helvetica", fontSize=9, textColor=GREY, leading=13)
+    bold   = ParagraphStyle("b", fontName="Helvetica-Bold", fontSize=9, textColor=GREY, leading=13)
+    h1     = ParagraphStyle("h1", fontName="Helvetica-Bold", fontSize=13, textColor=WHITE, leading=18)
+    h2     = ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=9, textColor=DB_NAVY, leading=14)
+    mono   = ParagraphStyle("m",  fontName="Courier", fontSize=8, textColor=GREY, leading=12)
+    small  = ParagraphStyle("s",  fontName="Helvetica", fontSize=7.5, textColor=colors.HexColor("#9CA3AF"), leading=11)
+    right  = ParagraphStyle("r",  fontName="Helvetica-Bold", fontSize=9, textColor=DB_NAVY,
+                            leading=13, alignment=TA_RIGHT)
+    center = ParagraphStyle("c",  fontName="Helvetica", fontSize=7.5, textColor=colors.HexColor("#9CA3AF"),
+                            leading=11, alignment=TA_CENTER)
+
+    story = []
+
+    # Header banner
+    hdr = Table([[Paragraph("TAX INVOICE", h1),
+                  Paragraph(inv["invoice_number"], h1)]],
+                colWidths=[W*0.6, W*0.4])
+    hdr.setStyle(TableStyle([
+        ("BACKGROUND",    (0,0),(-1,-1), DB_NAVY),
+        ("ALIGN",         (1,0),(1,-1),  "RIGHT"),
+        ("TOPPADDING",    (0,0),(-1,-1), 10),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 10),
+        ("LEFTPADDING",   (0,0),(0,-1),  14),
+        ("RIGHTPADDING",  (-1,0),(-1,-1),14),
+    ]))
+    story += [hdr, Spacer(1, 4*mm)]
+
+    # Vendor + Invoice details side by side
+    inv_date_str = data["inv_date"].strftime("%d-%b-%Y")
+    due_date_str = data["due_date"].strftime("%d-%b-%Y")
+    lbl = ParagraphStyle("lbl", fontName="Helvetica", fontSize=7, textColor=colors.HexColor("#9CA3AF"), leading=10)
+    val = ParagraphStyle("val", fontName="Helvetica-Bold", fontSize=8.5, textColor=GREY, leading=12)
+    def kv(l, v): return [Paragraph(l.upper(), lbl), Paragraph(v or "—", val)]
+
+    vendor_col = Table(
+        [[Paragraph("VENDOR", h2)],
+         [Paragraph(vendor["vendor_name"], bold)],
+         [Paragraph(f"{vendor['address_line1']}, {vendor['city']}, {vendor['state']}", normal)],
+         [Paragraph(f"GSTIN: {vendor['gstin'] or 'N/A'}", mono)],
+         [Paragraph(vendor["contact_email"], small)]],
+        colWidths=[W*0.45]
+    )
+    detail_tbl = Table(
+        [kv("Invoice No",   inv["invoice_number"]),
+         kv("Invoice Date", inv_date_str),
+         kv("Due Date",     due_date_str),
+         kv("PO Reference", inv.get("po_id") or "N/A"),
+         kv("GSTIN Vendor", inv.get("gstin_vendor") or "—"),
+         kv("Status",       inv.get("status") or "—")],
+        colWidths=[W*0.22, W*0.28]
+    )
+    top = Table([[vendor_col, detail_tbl]], colWidths=[W*0.5, W*0.5])
+    top.setStyle(TableStyle([
+        ("VALIGN",      (0,0),(-1,-1),"TOP"),
+        ("LINEAFTER",   (0,0),(0,-1), 0.5, GREY_LT),
+        ("LEFTPADDING", (1,0),(1,-1), 10),
+    ]))
+    story += [top, Spacer(1, 4*mm)]
+
+    # Totals
+    subtotal_str = f"INR {data['subtotal']:>14,.2f}"
+    cgst_str     = f"INR {data['cgst']:>14,.2f}"
+    sgst_str     = f"INR {data['sgst']:>14,.2f}"
+    total_str    = f"INR {data['total']:>14,.2f}"
+    story.append(HRFlowable(width=W, thickness=0.5, color=GREY_LT))
+    totals = Table([
+        [Paragraph("Subtotal",  normal), Paragraph(subtotal_str, normal)],
+        [Paragraph("CGST",      normal), Paragraph(cgst_str,     normal)],
+        [Paragraph("SGST",      normal), Paragraph(sgst_str,     normal)],
+        [Paragraph("<b>TOTAL</b>", right), Paragraph(f"<b>{total_str}</b>", right)],
+    ], colWidths=[W*0.82, W*0.18])
+    totals.setStyle(TableStyle([
+        ("TOPPADDING",    (0,0),(-1,-1), 3),
+        ("BOTTOMPADDING", (0,0),(-1,-1), 3),
+        ("ALIGN",         (0,0),(-1,-1), "RIGHT"),
+        ("LINEABOVE",     (0,-1),(-1,-1), 1, DB_NAVY),
+    ]))
+    story += [totals, Spacer(1, 4*mm)]
+
+    # Bank details
+    story.append(HRFlowable(width=W, thickness=0.5, color=GREY_LT))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(
+        f"Payment: State Bank of India · "
+        f"Account No: {vendor['bank_account']} · "
+        f"IFSC: {vendor['bank_ifsc'] or 'SBIN0001234'}",
+        small
+    ))
+    story.append(Spacer(1, 3*mm))
+
+    # Footer
+    story.append(HRFlowable(width=W, thickness=0.5, color=GREY_LT))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(
+        f"Finance &amp; Accounting Control Tower · Invoice ID: {inv['invoice_id']} · "
+        f"Declaration: Goods/services mentioned above have been supplied and payment is legally due.",
+        center
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+# Generate PDF invoice files and store metadata in bronze
+# ai_parse_document in the DLT pipeline will extract the text content from these PDFs
+#
+# Generate PDFs for ALL non-duplicate invoices.
+# ~5% are intentionally "tampered" (PDF total overstated vs ERP) to seed EXTRACTION_MISMATCH exceptions.
 raw_invoice_records = []
-sample_invoices = random.sample(p2p_invoices, min(200, len(p2p_invoices)))
+vendor_lookup = {v["vendor_id"]: v for v in vendors}
+non_dup_invoices = [inv for inv in p2p_invoices if inv["status"] != "DUPLICATE"]
+TAMPER_RATE = 0.05  # 5% of PDFs will have amounts that don't match the ERP
 
-for inv in sample_invoices:
-    raw_text = generate_raw_invoice_text(inv)
+print(f"Generating {len(non_dup_invoices)} PDF invoices (includes ~{int(len(non_dup_invoices)*TAMPER_RATE)} tampered)...")
+for i, inv in enumerate(non_dup_invoices):
+    vendor = vendor_lookup.get(inv["vendor_id"], vendors[0])
+    is_tampered = random.random() < TAMPER_RATE
+    tamper_factor = round(random.uniform(1.05, 1.10), 3) if is_tampered else 1.0
 
-    # Save raw text file to volume
-    file_path = f"{VOLUME_PATH}/{inv['invoice_id']}.txt"
-    with open(file_path, 'w') as f:
-        f.write(raw_text)
+    pdf_bytes = generate_invoice_pdf(inv, vendor, tamper_factor=tamper_factor)
+
+    # Save PDF to UC Volume (ai_parse_document reads binary files)
+    file_path = f"{VOLUME_PATH}/{inv['invoice_id']}.pdf"
+    with open(file_path, 'wb') as f:
+        f.write(pdf_bytes)
 
     raw_invoice_records.append({
         "invoice_id": inv["invoice_id"],
-        "raw_text": raw_text,
         "file_path": file_path,
-        "file_type": "TXT",
+        "file_type": "PDF",
         "vendor_id": inv["vendor_id"],
+        "is_tampered": is_tampered,
+        # Store the PDF-stated total (may differ from ERP total_amount for tampered invoices)
+        # This is what an AI extraction would return from the PDF — used by silver_p2p_invoices
+        # to detect EXTRACTION_MISMATCH without requiring DLT AI functions at runtime.
+        "pdf_stated_total": round(inv["total_amount"] * tamper_factor, 2),
         "processing_status": "PENDING",
         "_ingested_at": str(datetime.now()),
         "_source_system": "FILE_SCAN"
     })
+    if (i + 1) % 100 == 0:
+        print(f"  Generated {i + 1}/{len(non_dup_invoices)} PDFs")
 
 raw_inv_df = spark.createDataFrame(raw_invoice_records)
 raw_inv_df.write.format("delta").mode("overwrite").option("mergeSchema", "true").saveAsTable(f"{CATALOG}.{SCHEMA}.bronze_raw_invoice_documents")
 print(f"Raw Invoice Documents: {raw_inv_df.count()} rows")
-print(f"Files saved to: {VOLUME_PATH}")
+print(f"PDF files saved to: {VOLUME_PATH}")
 
 # COMMAND ----------
 

@@ -3,18 +3,38 @@ resources:
     fna_control_tower_app:
       name: "fna-control-tower"
       description: "Finance & Accounting Control Tower - Real-time AP/AR/GL monitoring with AI-powered exception handling"
-      source_code_path: ../app #replace with the path to the app directory
+      source_code_path: ../app
+
+      config:
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: ${resources.sql_warehouses.fna_warehouse.id}
+          - name: DATABRICKS_CATALOG
+            value: ${var.catalog}
+          - name: DATABRICKS_SCHEMA
+            value: ${var.schema}
+          - name: ESCALATION_RECIPIENT
+            value: ${var.escalation_recipient}
+          - name: SERVING_ENDPOINT_NAME
+            value: ${var.serving_endpoint_name}
+          - name: LAKEBASE_INSTANCE_NAME
+            value: ${var.lakebase_instance_name}
 
       resources:
         - name: sql-warehouse
           sql_warehouse:
-            id: ${var.warehouse_id}
+            id: ${resources.sql_warehouses.fna_warehouse.id}
             permission: CAN_USE
         - name: claude-endpoint
           serving_endpoint:
-            name: "databricks-claude-sonnet-4-5"
+            name: ${var.claude_endpoint_name}
             permission: CAN_QUERY
         - name: mas-supervisor
           serving_endpoint:
             name: ${var.serving_endpoint_name}
             permission: CAN_QUERY
+        - name: lakebase-conn
+          database:
+            instance_name: ${resources.database_instances.fna_lakebase.name}
+            database_name: databricks_postgres
+            permission: CAN_CONNECT_AND_CREATE

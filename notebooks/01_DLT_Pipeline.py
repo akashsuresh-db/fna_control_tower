@@ -14,7 +14,7 @@ import dlt
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-CATALOG = spark.conf.get("source_catalog", "hp_sf_test")
+CATALOG = spark.conf.get("source_catalog", "fna_control_tower")
 SCHEMA = spark.conf.get("source_schema", "finance_and_accounting")
 
 # COMMAND ----------
@@ -207,12 +207,25 @@ def silver_grn():
 
 
 @dlt.table(name="silver_p2p_invoices",
-           comment="Deduplicated P2P invoices with 3-way match status",
+           comment="Deduplicated P2P invoices with 3-way match status and AI-extraction validation",
            table_properties={"quality": "silver", "domain": "P2P"})
 def silver_p2p_invoices():
     invoices = dlt.read("bronze_p2p_invoices_dlt")
     po_headers = dlt.read("silver_po_header")
     grns = dlt.read("silver_grn")
+
+    # PDF invoice data: file paths + PDF-stated totals from bronze_raw_invoice_documents.
+    # This table is populated by data_generation (and enriched by 05_Invoice_AI_Processing.py
+    # when ai_parse_document is available). pdf_stated_total is the amount as shown on the PDF
+    # (tampered for ~5% of invoices) — used to detect EXTRACTION_MISMATCH.
+    extractions = (
+        spark.read.format("delta").table(f"{CATALOG}.{SCHEMA}.bronze_raw_invoice_documents")
+        .select(
+            F.col("invoice_id").alias("ext_invoice_id"),
+            F.col("file_path").alias("pdf_file_path"),
+            F.col("pdf_stated_total").cast("double").alias("pdf_extracted_total"),
+        )
+    )
 
     # Deduplicate: keep one record per invoice_number (latest ingested)
     w = Window.partitionBy("invoice_number").orderBy(F.col("_ingested_at").desc())
@@ -240,8 +253,16 @@ def silver_p2p_invoices():
         F.max("received_amount").alias("grn_received_amount")
     )
 
+    # Join AI extraction results (left join — not all invoices have a PDF)
+    with_extraction = (
+        with_po
+        .join(grn_summary, on="po_id", how="left")
+        .join(extractions, F.col("invoice_id") == F.col("ext_invoice_id"), how="left")
+        .drop("ext_invoice_id")
+    )
+
     return (
-        with_po.join(grn_summary, on="po_id", how="left")
+        with_extraction
         .withColumn("invoice_date", F.to_date("invoice_date"))
         .withColumn("due_date", F.to_date("due_date"))
         .withColumn("has_po_ref", (F.col("po_id").isNotNull()) & (F.col("po_id") != ""))
@@ -249,16 +270,29 @@ def silver_p2p_invoices():
         .withColumn("amount_matches_po",
                     F.abs(F.col("invoice_amount") - F.coalesce(F.col("po_total_amount"), F.lit(0.0))) <
                     F.col("invoice_amount") * 0.05)
+        # pdf_amount_matches_erp: True when no PDF exists (assume OK), or when PDF total is within 2% of ERP total
+        .withColumn("pdf_amount_matches_erp",
+                    F.when(F.col("pdf_extracted_total").isNull(), F.lit(True))
+                     .otherwise(
+                         F.abs(F.col("pdf_extracted_total") - F.col("total_amount")) <
+                         F.col("total_amount") * 0.02
+                     ))
         .withColumn("match_status",
-                    F.when(F.col("has_po_ref") & F.col("has_grn") & F.col("amount_matches_po"), "THREE_WAY_MATCHED")
-                     .when(F.col("has_po_ref") & F.col("amount_matches_po"), "TWO_WAY_MATCHED")
+                    # Priority order: no PO → ERP/PO mismatch → PDF tampering → normal match
+                    F.when(~F.col("has_po_ref"), "NO_PO_REFERENCE")
                      .when(F.col("has_po_ref") & ~F.col("amount_matches_po"), "AMOUNT_MISMATCH")
-                     .when(~F.col("has_po_ref"), "NO_PO_REFERENCE")
+                     .when(F.col("has_po_ref") & F.col("amount_matches_po") & ~F.col("pdf_amount_matches_erp"),
+                           "EXTRACTION_MISMATCH")
+                     .when(F.col("has_po_ref") & F.col("amount_matches_po") & F.col("has_grn"), "THREE_WAY_MATCHED")
+                     .when(F.col("has_po_ref") & F.col("amount_matches_po"), "TWO_WAY_MATCHED")
                      .otherwise("PENDING_REVIEW"))
         .withColumn("days_outstanding",
                     F.when(F.col("status") != "PAID",
                            F.datediff(F.current_date(), F.col("invoice_date"))))
         .withColumn("is_overdue", F.col("due_date") < F.current_date())
+        # data_source: explicit tag showing which systems contributed data for this invoice
+        .withColumn("data_source",
+                    F.when(F.col("pdf_file_path").isNotNull(), "ERP_AND_PDF").otherwise("ERP_ONLY"))
         .withColumn("_silver_processed_at", F.current_timestamp())
     )
 
@@ -354,3 +388,10 @@ def silver_journal_entries():
         .withColumn("_silver_processed_at", F.current_timestamp())
         .dropDuplicates(["je_id"])
     )
+
+
+# NOTE: PDF AI extraction (ai_parse_document + ai_extract) is handled by
+# 05_Invoice_AI_Processing.py as a separate batch job step, not inside DLT.
+# ai_parse_document is a SQL warehouse function and is not available in DLT's
+# analysis context. silver_p2p_invoices reads pdf_stated_total directly from
+# bronze_raw_invoice_documents (written by data_generation and AI processing).

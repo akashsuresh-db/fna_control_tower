@@ -30,32 +30,46 @@ export function formatNum(value: number | string | null | undefined): string {
 /** Status color mapping. */
 export function matchStatusColor(status: string): string {
   switch (status) {
-    case "THREE_WAY_MATCHED": return "text-db-green";
-    case "TWO_WAY_MATCHED": return "text-db-blue";
-    case "AMOUNT_MISMATCH": return "text-db-red";
-    case "NO_PO_REFERENCE": return "text-db-amber";
+    case "THREE_WAY_MATCHED":   return "text-db-green";
+    case "TWO_WAY_MATCHED":     return "text-db-blue";
+    case "AMOUNT_MISMATCH":     return "text-db-red";
+    case "NO_PO_REFERENCE":     return "text-db-amber";
+    case "EXTRACTION_MISMATCH": return "text-purple-400";
     default: return "text-text-secondary";
   }
 }
 
 export function matchStatusBg(status: string): string {
   switch (status) {
-    case "THREE_WAY_MATCHED": return "bg-db-green/15 border-db-green/30";
-    case "TWO_WAY_MATCHED": return "bg-db-blue/15 border-db-blue/30";
-    case "AMOUNT_MISMATCH": return "bg-db-red/15 border-db-red/30";
-    case "NO_PO_REFERENCE": return "bg-db-amber/15 border-db-amber/30";
+    case "THREE_WAY_MATCHED":   return "bg-db-green/15 border-db-green/30";
+    case "TWO_WAY_MATCHED":     return "bg-db-blue/15 border-db-blue/30";
+    case "AMOUNT_MISMATCH":     return "bg-db-red/15 border-db-red/30";
+    case "NO_PO_REFERENCE":     return "bg-db-amber/15 border-db-amber/30";
+    case "EXTRACTION_MISMATCH": return "bg-purple-500/10 border-purple-500/30";
     default: return "bg-bg-card border-border-subtle";
   }
 }
 
 export function matchStatusLabel(status: string): string {
   switch (status) {
-    case "THREE_WAY_MATCHED": return "3-Way Matched";
-    case "TWO_WAY_MATCHED": return "2-Way Matched";
-    case "AMOUNT_MISMATCH": return "Amount Mismatch";
-    case "NO_PO_REFERENCE": return "No PO Reference";
+    case "THREE_WAY_MATCHED":   return "3-Way Matched";
+    case "TWO_WAY_MATCHED":     return "2-Way Matched";
+    case "AMOUNT_MISMATCH":     return "Amount Mismatch";
+    case "NO_PO_REFERENCE":     return "No PO Reference";
+    case "EXTRACTION_MISMATCH": return "AI Extraction Mismatch";
     default: return status;
   }
+}
+
+/** Data source badge utilities. */
+export function dataSourceLabel(source: string): string {
+  return source === "ERP_AND_PDF" ? "ERP + PDF" : "ERP";
+}
+
+export function dataSourceBadgeClass(source: string): string {
+  return source === "ERP_AND_PDF"
+    ? "bg-teal-500/10 text-teal-400 border-teal-500/20"
+    : "bg-slate-500/10 text-slate-400 border-slate-500/20";
 }
 
 export function severityColor(severity: string): string {

@@ -193,7 +193,89 @@ def _ensure_alert_id(w: WorkspaceClient) -> None:
     _alert_id = _find_alert_by_name(w)
 
 
-def arm_alert(exception_types: list[str]) -> dict:
+def _rest(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    """Minimal REST helper — bypasses SDK env-var auth conflict."""
+    import urllib.request, urllib.error, json as _json
+    host = os.environ.get("DATABRICKS_HOST", "")
+    if host and not host.startswith("http"):
+        host = f"https://{host}"
+    url = f"{host.rstrip('/')}{path}"
+    data = _json.dumps(body).encode() if body else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return _json.loads(resp.read()) if resp.read else {}
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"REST {method} {path} → {e.code}: {e.read().decode()[:300]}")
+
+
+def _make_workspace_client(user_token: str) -> "WorkspaceClient":
+    """
+    Create a WorkspaceClient using only the user token, bypassing any M2M
+    OAuth env vars (DATABRICKS_CLIENT_ID/SECRET) that would conflict.
+
+    Temporarily removes conflicting env vars so the SDK doesn't detect a
+    mixed-auth scenario, then restores them afterwards.
+    """
+    host = os.environ.get("DATABRICKS_HOST", "")
+    if host and not host.startswith("http"):
+        host = f"https://{host}"
+
+    # Temporarily remove M2M env vars that conflict with PAT auth
+    _saved = {}
+    for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET",
+                "DATABRICKS_ACCOUNT_ID", "ARM_CLIENT_ID", "ARM_CLIENT_SECRET"):
+        val = os.environ.pop(key, None)
+        if val is not None:
+            _saved[key] = val
+
+    try:
+        os.environ["DATABRICKS_TOKEN"] = user_token
+        w = WorkspaceClient(host=host)
+    finally:
+        # Restore env vars
+        os.environ.pop("DATABRICKS_TOKEN", None)
+        for k, v in _saved.items():
+            os.environ[k] = v
+
+    return w
+
+
+def _get_or_create_destination_rest(token: str, email: str) -> str:
+    """Find or create email notification destination using direct REST API."""
+    global _dest_id
+    if _dest_id:
+        return _dest_id
+    try:
+        data = _rest("GET", "/api/2.0/notification-destinations", token)
+        for d in data.get("results", []):
+            if d.get("destination_type") == "EMAIL":
+                cfg = d.get("config", {}).get("email", {})
+                if email in cfg.get("addresses", []):
+                    _dest_id = d["id"]
+                    return _dest_id
+    except Exception as e:
+        print(f"[escalate] Could not list notification destinations: {e}")
+
+    # Create new email destination
+    try:
+        nd = _rest("POST", "/api/2.0/notification-destinations", token, {
+            "display_name": f"Finance Escalation — {email}",
+            "config": {"email": {"addresses": [email]}},
+        })
+        _dest_id = nd["id"]
+        return _dest_id
+    except Exception as e:
+        raise RuntimeError(f"Could not create notification destination: {e}")
+
+
+def arm_alert(exception_types: list[str], user_token: str | None = None) -> dict:
     """
     Ensure the SQL Alert exists in Databricks and arms it for the selected
     exception types. The alert fires within ~60 seconds via its cron schedule.
@@ -201,33 +283,66 @@ def arm_alert(exception_types: list[str]) -> dict:
     On first call: creates the alert (it will then persist in Databricks).
     On subsequent calls: updates only query_text + schedule if the selection
     has changed, then unpauses. No-ops the update if nothing changed.
+
+    Uses user_token (x-forwarded-access-token from Databricks Apps proxy)
+    when available, so alert creation runs with user-level workspace permissions
+    rather than the app service principal's restricted M2M credentials.
     """
     global _alert_id, _last_sql
 
-    w = WorkspaceClient()
     sql = build_alert_sql(exception_types)
-    dest_id = _get_or_create_destination(w, RECIPIENT)
 
-    _ensure_alert_id(w)
-
-    if _alert_id:
-        # Update SQL only if the selection changed; always unpause
-        need_sql_update = (sql != _last_sql)
-        mask = "query_text,evaluation,schedule" if need_sql_update else "schedule"
-        w.alerts_v2.update_alert(
-            id=_alert_id,
-            alert=_alert_spec(sql, dest_id, paused=False),
-            update_mask=mask,
-        )
-        print(f"[escalate] Alert {_alert_id} armed (mask={mask})")
+    if user_token:
+        # Get notification destination via direct REST (bypasses SP restriction)
+        dest_id = _get_or_create_destination_rest(user_token, RECIPIENT)
+        # Use SDK with user token (isolated from M2M env vars) for alert creation
+        w = _make_workspace_client(user_token)
+        _ensure_alert_id_sdk(w)
+        _arm_alert_sdk(sql, dest_id, w)
     else:
-        # First run — create the alert in Databricks
-        a = w.alerts_v2.create_alert(alert=_alert_spec(sql, dest_id, paused=False))
-        _alert_id = a.id
-        print(f"[escalate] Created alert {_alert_id}")
+        w = WorkspaceClient()
+        dest_id = _get_or_create_destination(w, RECIPIENT)
+        _ensure_alert_id(w)
+        _arm_alert_sdk(sql, dest_id, w)
 
     _last_sql = sql
     return {"alert_id": _alert_id, "dest_id": dest_id}
+
+
+def _ensure_alert_id_sdk(w: "WorkspaceClient") -> None:
+    """Find alert by name using SDK."""
+    global _alert_id
+    if _alert_id:
+        try:
+            w.alerts_v2.get_alert(id=_alert_id)
+            return
+        except Exception:
+            _alert_id = None
+    try:
+        for a in w.alerts_v2.list():
+            if a.display_name == ALERT_NAME:
+                _alert_id = a.id
+                print(f"[escalate] Found existing alert: {_alert_id}")
+                return
+    except Exception as e:
+        print(f"[escalate] Could not list alerts: {e}")
+
+
+def _arm_alert_sdk(sql: str, dest_id: str, w: "WorkspaceClient") -> None:
+    """Create or update SQL Alert V2 via SDK."""
+    global _alert_id, _last_sql
+
+    spec = _alert_spec(sql, dest_id, paused=False)
+
+    if _alert_id:
+        need_sql_update = (sql != _last_sql)
+        mask = "query_text,evaluation,schedule" if need_sql_update else "schedule"
+        w.alerts_v2.update_alert(id=_alert_id, alert=spec, update_mask=mask)
+        print(f"[escalate] Alert {_alert_id} armed (mask={mask})")
+    else:
+        a = w.alerts_v2.create_alert(alert=spec)
+        _alert_id = a.id
+        print(f"[escalate] Created alert {_alert_id}")
 
 
 def pause_alert() -> None:
@@ -249,14 +364,14 @@ def pause_alert() -> None:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def run_escalation(exception_types: list[str]) -> dict:
+def run_escalation(exception_types: list[str], user_token: str | None = None) -> dict:
     """
     Arm the SQL Alert for the selected exception types.
     Databricks evaluates and sends the email within ~60 seconds.
 
     Returns {"status", "alert_id", "recipient", "exception_types", "message"}.
     """
-    state = arm_alert(exception_types)
+    state = arm_alert(exception_types, user_token=user_token)
 
     # Schedule background re-pause after 90 seconds
     async def _delayed_pause():

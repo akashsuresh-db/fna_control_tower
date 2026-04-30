@@ -16,20 +16,35 @@ from backend.chat import stream_mas_agent, AGENT_ENDPOINT
 from backend import lakebase
 from backend.invoice_pdf import build_invoice_pdf
 from backend import escalate
+from backend.config import CATALOG, SCHEMA
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: verify DB connectivity
+    # Startup: verify DB connectivity with a timeout so cold-start warehouses
+    # don't block the app from becoming available. Falls back to demo mode.
     try:
-        result = db.query("SELECT 1 as ok")
+        result = await asyncio.wait_for(
+            asyncio.to_thread(db.query, "SELECT 1 as ok"),
+            timeout=120.0,
+        )
         print(f"Database connection verified: {result}")
+    except asyncio.TimeoutError:
+        # Explicitly enable demo mode so metrics endpoints don't hang on the cold warehouse
+        db._demo_mode = True
+        print("WARNING: Database connection timed out at startup (warehouse cold start) — using demo mode")
     except Exception as e:
+        db._demo_mode = True
         print(f"WARNING: Database connection failed: {e}")
-    # Initialize Lakebase schema
+    # Initialize Lakebase schema (also with timeout)
     try:
-        lakebase.init_schema()
+        await asyncio.wait_for(
+            asyncio.to_thread(lakebase.init_schema),
+            timeout=20.0,
+        )
         print("Lakebase schema initialized successfully")
+    except asyncio.TimeoutError:
+        print("WARNING: Lakebase init timed out — will use in-memory fallback")
     except Exception as e:
         print(f"WARNING: Lakebase init failed (will use demo mode): {e}")
     yield
@@ -46,9 +61,16 @@ async def health():
 
 @app.get("/api/debug/status")
 async def debug_status():
-    """Diagnostics: Lakebase mode, escalate alert state."""
+    """Diagnostics: DB mode, Lakebase status, escalate config."""
     from backend import escalate as _esc
+    from backend.config import WAREHOUSE_ID, CATALOG, SCHEMA
     return {
+        "db": {
+            "demo_mode": db._demo_mode,
+            "warehouse_id": WAREHOUSE_ID,
+            "catalog": CATALOG,
+            "schema": SCHEMA,
+        },
         "lakebase": lakebase.get_status(),
         "escalate": {
             "alert_id": _esc._alert_id,
@@ -179,7 +201,7 @@ async def chat(req: ChatRequest, request: Request):
         tool_name = None
 
         try:
-            async for event in stream_mas_agent(messages, user_token=user_token, previous_response_id=prev_response_id):
+            async for event in stream_mas_agent(messages, user_token=user_token, previous_response_id=prev_response_id, active_tab=req.active_tab):
                 if event["type"] == "chunk":
                     full_answer += event["text"]
                     yield f"data: {json.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
@@ -277,14 +299,18 @@ class EscalateRequest(BaseModel):
     exception_types: list[str]  # e.g. ["AMOUNT_MISMATCH", "NO_PO_REFERENCE"]
 
 @app.post("/api/escalate/p2p")
-async def escalate_p2p(req: EscalateRequest):
+async def escalate_p2p(req: EscalateRequest, request: Request):
     """
     Create/update a Databricks SQL Alert for the selected exception types
     and unpause it so Databricks fires the email within ~60 seconds.
     Recipient is set via ESCALATION_RECIPIENT env var — not from the UI.
+    Uses the forwarded user token so the alert is created with the user's
+    workspace permissions (avoids SP non-admin restriction on notification
+    destinations).
     """
+    user_token = request.headers.get("x-forwarded-access-token")
     try:
-        result = await asyncio.to_thread(escalate.run_escalation, req.exception_types)
+        result = await asyncio.to_thread(escalate.run_escalation, req.exception_types, user_token)
         return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -328,10 +354,16 @@ async def my_approvals(request: Request):
 
 def _build_invoice_response(row: dict) -> dict:
     """Coerce a DB row or demo dict to the invoice response shape."""
+    # pdf_file_path comes from gold_fact_invoices (via silver_invoice_extractions join)
+    # or from bronze_raw_invoice_documents fallback join
+    pdf_path = row.get("pdf_file_path") or row.get("file_path") or ""
+    data_source = row.get("data_source") or ("ERP_AND_PDF" if pdf_path else "ERP_ONLY")
+    match_status = row.get("match_status") or ""
+    _matched = {"THREE_WAY_MATCHED", "TWO_WAY_MATCHED"}
     return {
         "invoice_id":        row.get("invoice_id"),
         "invoice_number":    row.get("invoice_number"),
-        "quarantine_reason": row.get("quarantine_reason"),
+        "quarantine_reason": row.get("quarantine_reason") or (match_status if match_status not in _matched else None),
         "vendor_id":         row.get("vendor_id"),
         "vendor_name":       row.get("vendor_name"),
         "po_id":             row.get("po_id"),
@@ -343,7 +375,10 @@ def _build_invoice_response(row: dict) -> dict:
         "gstin":             row.get("gstin_vendor") or row.get("gstin"),
         "payment_terms":     row.get("payment_terms"),
         "raw_text":          row.get("raw_text") or "",
-        "file_path":         row.get("file_path") or "",
+        "file_path":         pdf_path,
+        # Data provenance fields — used by the UI to show source badges and conditionally show PDF
+        "data_source":       data_source,
+        "has_source_pdf":    bool(pdf_path),
     }
 
 
@@ -352,7 +387,13 @@ def _demo_invoice_fallback(invoice_id: str) -> dict | None:
     demo_pool = db._get_demo_invoices(200)
     for inv in demo_pool:
         if inv.get("invoice_id") == invoice_id or inv.get("invoice_number") == invoice_id:
-            return {**inv, "quarantine_reason": inv.get("match_status") if inv.get("match_status") not in ("THREE_WAY_MATCHED", "TWO_WAY_MATCHED") else None, "raw_text": "", "file_path": ""}
+            matched = inv.get("match_status") in ("THREE_WAY_MATCHED", "TWO_WAY_MATCHED")
+            return {
+                **inv,
+                "quarantine_reason": None if matched else inv.get("match_status"),
+                "raw_text": "",
+                "file_path": inv.get("pdf_file_path") or "",
+            }
     # Construct a plausible demo invoice for any unknown ID
     return {
         "invoice_id": invoice_id,
@@ -370,6 +411,8 @@ def _demo_invoice_fallback(invoice_id: str) -> dict | None:
         "payment_terms": "Net 30",
         "raw_text": "",
         "file_path": "",
+        "data_source": "ERP_ONLY",
+        "has_source_pdf": False,
     }
 
 
@@ -387,89 +430,69 @@ async def get_invoice(invoice_id: str):
     bronze_col = "b.invoice_number" if is_erp_number else "b.invoice_id"
 
     try:
-        # 1️⃣ Primary: gold_fact_invoices (same table the SSE stream reads from)
+        # Skip warehouse queries immediately if in demo mode (warehouse unavailable)
+        if db._demo_mode:
+            return _build_invoice_response(_demo_invoice_fallback(invoice_id))
+
+
+
+        # 1️⃣ Primary: gold_fact_invoices — pdf_file_path and data_source come directly from gold
         rows = await asyncio.to_thread(db.query, f"""
             SELECT
                 i.invoice_id,
                 i.invoice_number,
-                CASE WHEN i.match_status NOT IN ('THREE_WAY_MATCHED','TWO_WAY_MATCHED')
-                     THEN i.match_status ELSE NULL END AS quarantine_reason,
+                i.match_status,
                 i.vendor_id,
                 v.vendor_name,
                 i.po_id,
                 i.invoice_date,
                 i.due_date,
                 i.invoice_amount,
-                i.invoice_total_inr      AS po_amount,
-                i.invoice_status         AS status,
+                i.invoice_total_inr AS po_amount,
+                i.invoice_status    AS status,
                 i.gstin_vendor,
-                NULL                     AS payment_terms,
-                r.raw_text,
-                r.file_path
-            FROM hp_sf_test.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN hp_sf_test.finance_and_accounting.gold_dim_vendor v
-                ON i.vendor_id = v.vendor_id
-            LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
-                ON i.invoice_id = r.invoice_id
-            WHERE {gold_col} = '{invoice_id}'
+                NULL                AS payment_terms,
+                i.pdf_file_path,
+                i.data_source
+            FROM {CATALOG}.{SCHEMA}.gold_fact_invoices i
+            LEFT JOIN {CATALOG}.{SCHEMA}.gold_dim_vendor v ON i.vendor_id = v.vendor_id
+            WHERE {gold_col} = %(invoice_id)s
             LIMIT 1
-        """)
+        """, {"invoice_id": invoice_id})
 
-        # 2️⃣ Fallback: silver_invoice_exceptions (has payment_terms + original amounts)
+        # 2️⃣ Fallback: silver_invoice_exceptions
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    e.invoice_id,
-                    e.invoice_number,
-                    e.exception_type      AS quarantine_reason,
-                    e.vendor_id,
-                    v.vendor_name,
-                    e.po_id,
-                    e.invoice_date,
-                    e.due_date,
-                    e.invoice_amount,
-                    e.total_amount        AS po_amount,
-                    e.status,
-                    e.gstin_vendor,
-                    e.payment_terms,
-                    r.raw_text,
-                    r.file_path
-                FROM hp_sf_test.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
-                    ON e.invoice_id = r.invoice_id
-                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v
-                    ON e.vendor_id = v.vendor_id
-                WHERE {exc_col} = '{invoice_id}'
+                    e.invoice_id, e.invoice_number,
+                    e.exception_type AS match_status,
+                    e.vendor_id, v.vendor_name, e.po_id,
+                    e.invoice_date, e.due_date, e.invoice_amount,
+                    e.total_amount AS po_amount,
+                    e.status, e.gstin_vendor, e.payment_terms,
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.silver_invoice_exceptions e
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_vendors v ON e.vendor_id = v.vendor_id
+                WHERE {exc_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         # 3️⃣ Last resort: bronze_p2p_invoices
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    b.invoice_id,
-                    b.invoice_number,
-                    NULL              AS quarantine_reason,
-                    b.vendor_id,
-                    v.vendor_name,
-                    b.po_id,
-                    b.invoice_date,
-                    b.due_date,
-                    b.invoice_amount,
-                    b.total_amount    AS po_amount,
-                    b.status,
-                    b.gstin_vendor,
-                    b.payment_terms,
-                    r.raw_text,
-                    r.file_path
-                FROM hp_sf_test.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r
-                    ON b.invoice_id = r.invoice_id
-                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v
-                    ON b.vendor_id = v.vendor_id
-                WHERE {bronze_col} = '{invoice_id}'
+                    b.invoice_id, b.invoice_number,
+                    NULL AS match_status,
+                    b.vendor_id, v.vendor_name, b.po_id,
+                    b.invoice_date, b.due_date, b.invoice_amount,
+                    b.total_amount AS po_amount,
+                    b.status, b.gstin_vendor, b.payment_terms,
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.bronze_p2p_invoices b
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_vendors v ON b.vendor_id = v.vendor_id
+                WHERE {bronze_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         if rows:
             return _build_invoice_response(rows[0])
@@ -481,11 +504,58 @@ async def get_invoice(invoice_id: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.get("/api/invoice/{invoice_id}/pdf")
-async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
+async def _fetch_pdf_from_volume(file_path: str, user_token: str | None = None) -> bytes | None:
     """
-    Generate and stream a PDF for the given invoice.
-    Searches gold_fact_invoices first, then silver_invoice_exceptions, then bronze_p2p_invoices.
+    Fetch a PDF from UC Volume via Databricks Files API.
+    Returns pdf bytes on success, None on failure.
+    """
+    import os as _os
+    import urllib.request as _url_req
+
+    if not file_path or not file_path.lower().endswith(".pdf"):
+        return None
+
+    host = _os.environ.get("DATABRICKS_HOST", "")
+    if not host:
+        try:
+            from databricks.sdk import WorkspaceClient
+            host = WorkspaceClient().config.host or ""
+        except Exception:
+            pass
+    if not host:
+        return None
+    if not host.startswith("http"):
+        host = f"https://{host}"
+
+    token = user_token
+    if not token:
+        try:
+            from databricks.sdk import WorkspaceClient
+            token = WorkspaceClient().config.token or ""
+        except Exception:
+            pass
+    if not token:
+        return None
+
+    url = f"{host.rstrip('/')}/api/2.0/fs/files{file_path}"
+    req = _url_req.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with _url_req.urlopen(req, timeout=15) as resp:
+            return resp.read()
+    except Exception as e:
+        print(f"Volume fetch failed for {file_path}: {e}")
+        return None
+
+
+@app.get("/api/invoice/{invoice_id}/pdf")
+async def get_invoice_pdf(invoice_id: str, request: Request, download: bool = Query(False)):
+    """
+    Serve the PDF for the given invoice.
+
+    Priority:
+      1. Fetch the original PDF from UC Volume (raw_invoices/<invoice_id>.pdf)
+         — this is the actual source document that ai_parse_document processed
+      2. Fall back to dynamically building a PDF from ERP metadata
     Falls back to demo data when the warehouse is unreachable.
     """
     import re as _re
@@ -494,67 +564,84 @@ async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
     exc_col    = "e.invoice_number" if is_erp_number else "e.invoice_id"
     bronze_col = "b.invoice_number" if is_erp_number else "b.invoice_id"
 
+    # User token for Files API — forwarded by Databricks Apps proxy
+    user_token = request.headers.get("x-forwarded-access-token")
+
+    def _disposition(fname: str) -> str:
+        return f'attachment; filename="{fname}"' if download else f'inline; filename="{fname}"'
+
     try:
-        # 1️⃣ gold_fact_invoices (primary — matches the SSE stream source)
+        # Skip warehouse queries immediately if in demo mode
+        if db._demo_mode:
+            erp = _build_invoice_response(_demo_invoice_fallback(invoice_id))
+            pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, "")
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                            headers={"Content-Disposition": _disposition(f"invoice-{invoice_id}.pdf")})
+
+        # 1️⃣ gold_fact_invoices — pdf_file_path comes directly from gold (no extra join needed)
         rows = await asyncio.to_thread(db.query, f"""
             SELECT
-                i.invoice_id, i.invoice_number,
-                CASE WHEN i.match_status NOT IN ('THREE_WAY_MATCHED','TWO_WAY_MATCHED')
-                     THEN i.match_status ELSE NULL END AS quarantine_reason,
+                i.invoice_id, i.invoice_number, i.match_status,
                 i.vendor_id, v.vendor_name, i.po_id,
                 i.invoice_date, i.due_date, i.invoice_amount, i.invoice_total_inr AS po_amount,
                 i.invoice_status AS status, i.gstin_vendor, NULL AS payment_terms,
-                r.raw_text, r.file_path
-            FROM hp_sf_test.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN hp_sf_test.finance_and_accounting.gold_dim_vendor v ON i.vendor_id = v.vendor_id
-            LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON i.invoice_id = r.invoice_id
-            WHERE {gold_col} = '{invoice_id}'
+                i.pdf_file_path, i.data_source
+            FROM {CATALOG}.{SCHEMA}.gold_fact_invoices i
+            LEFT JOIN {CATALOG}.{SCHEMA}.gold_dim_vendor v ON i.vendor_id = v.vendor_id
+            WHERE {gold_col} = %(invoice_id)s
             LIMIT 1
-        """)
+        """, {"invoice_id": invoice_id})
 
         # 2️⃣ silver_invoice_exceptions
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    e.invoice_id, e.invoice_number, e.exception_type AS quarantine_reason,
+                    e.invoice_id, e.invoice_number, e.exception_type AS match_status,
                     e.vendor_id, v.vendor_name, e.po_id,
                     e.invoice_date, e.due_date, e.invoice_amount, e.total_amount AS po_amount,
                     e.status, e.gstin_vendor, e.payment_terms,
-                    r.raw_text, r.file_path
-                FROM hp_sf_test.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON e.invoice_id = r.invoice_id
-                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v ON e.vendor_id = v.vendor_id
-                WHERE {exc_col} = '{invoice_id}'
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.silver_invoice_exceptions e
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_vendors v ON e.vendor_id = v.vendor_id
+                WHERE {exc_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         # 3️⃣ bronze_p2p_invoices
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    b.invoice_id, b.invoice_number, NULL AS quarantine_reason,
+                    b.invoice_id, b.invoice_number, NULL AS match_status,
                     b.vendor_id, v.vendor_name, b.po_id,
                     b.invoice_date, b.due_date, b.invoice_amount, b.total_amount AS po_amount,
                     b.status, b.gstin_vendor, b.payment_terms,
-                    r.raw_text, r.file_path
-                FROM hp_sf_test.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN hp_sf_test.finance_and_accounting.bronze_raw_invoice_documents r ON b.invoice_id = r.invoice_id
-                LEFT JOIN hp_sf_test.finance_and_accounting.silver_vendors v ON b.vendor_id = v.vendor_id
-                WHERE {bronze_col} = '{invoice_id}'
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.bronze_p2p_invoices b
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_vendors v ON b.vendor_id = v.vendor_id
+                WHERE {bronze_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         erp = _build_invoice_response(rows[0] if rows else _demo_invoice_fallback(invoice_id))
-        raw_text = (rows[0].get("raw_text") or "") if rows else ""
+        file_path = erp.get("file_path", "")
 
-        pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, raw_text)
+        # Try to serve the actual source PDF from UC Volume
+        if file_path:
+            pdf_bytes = await _fetch_pdf_from_volume(file_path, user_token)
+            if pdf_bytes:
+                filename = file_path.split("/")[-1] or f"invoice-{invoice_id}.pdf"
+                return Response(
+                    content=pdf_bytes,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": _disposition(filename)},
+                )
 
-        filename = f"invoice-{invoice_id}.pdf"
-        disposition = f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+        # Fall back: build a PDF from ERP metadata
+        pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, "")
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": disposition},
+            headers={"Content-Disposition": _disposition(f"invoice-{invoice_id}.pdf")},
         )
 
     except Exception as e:

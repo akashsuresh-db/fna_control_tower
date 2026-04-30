@@ -3,26 +3,45 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk --upgrade -q
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+dbutils.widgets.text("catalog", "fna_control_tower", "Unity Catalog")
+dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
+dbutils.widgets.text("warehouse_id", "4b9b953939869799", "SQL Warehouse ID")
+dbutils.widgets.text("genie_space_id", "", "Genie Space ID")
 
 # COMMAND ----------
 
 import json, requests
 from databricks.sdk import WorkspaceClient
 
-CATALOG = "hp_sf_test"
-SCHEMA = "finance_and_accounting"
-HOST = "https://adb-984752964297111.11.azuredatabricks.net"
-SPACE_ID = "01f122c95c741815919b6457017f0899"
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+warehouse_id = dbutils.widgets.get("warehouse_id")
+_space_id_widget = dbutils.widgets.get("genie_space_id")
 
-token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+token = ctx.apiToken().get()
+HOST = ctx.apiUrl().get().rstrip("/")
 headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 w = WorkspaceClient()
-warehouse_id = "148ccb90800933a1"
+
+# Resolve Genie Space ID: widget → task value from task 07 → empty
+if _space_id_widget:
+    SPACE_ID = _space_id_widget
+else:
+    try:
+        SPACE_ID = dbutils.jobs.taskValues.get(
+            taskKey="create_genie_space",
+            key="genie_space_id",
+            default="",
+        )
+        if SPACE_ID:
+            print(f"Genie Space ID read from task values: {SPACE_ID}")
+    except Exception:
+        SPACE_ID = ""
+
+if not SPACE_ID:
+    print("⚠ No Genie Space ID available — skipping configuration")
+    dbutils.notebook.exit("SKIPPED: no genie_space_id")
 
 gold_tables = [
     f"{CATALOG}.{SCHEMA}.gold_dim_vendor",
@@ -35,7 +54,7 @@ gold_tables = [
     f"{CATALOG}.{SCHEMA}.gold_fact_trial_balance",
 ]
 
-output = {"space_id": SPACE_ID, "url": f"{HOST}/genie/spaces/{SPACE_ID}"}
+output = {"space_id": SPACE_ID, "url": f"{HOST}/genie/spaces/{SPACE_ID}" if SPACE_ID else ""}
 
 # COMMAND ----------
 
@@ -147,10 +166,13 @@ if resp.status_code in [200, 201]:
 
 print(f"\n=== GENIE SPACE READY ===")
 print(f"Space ID: {SPACE_ID}")
-print(f"URL: {HOST}/genie/spaces/{SPACE_ID}")
-print(f"\nNow manually add tables in the UI:")
+if SPACE_ID:
+    print(f"URL: {HOST}/genie/spaces/{SPACE_ID}")
+    output["final_url"] = f"{HOST}/genie/spaces/{SPACE_ID}"
+else:
+    print("No Genie Space ID provided - skipping configuration")
+print(f"\nTables configured for: {CATALOG}.{SCHEMA}.gold_*")
 for t in gold_tables:
     print(f"  - {t}")
 
-output["final_url"] = f"{HOST}/genie/spaces/{SPACE_ID}"
 dbutils.notebook.exit(json.dumps(output))

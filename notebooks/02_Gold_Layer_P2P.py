@@ -9,7 +9,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "hp_sf_test", "Unity Catalog")
+dbutils.widgets.text("catalog", "fna_control_tower", "Unity Catalog")
 dbutils.widgets.text("schema", "finance_and_accounting", "Schema")
 
 CATALOG = dbutils.widgets.get("catalog")
@@ -45,6 +45,7 @@ vendor_spend = (
         F.countDistinct("po_id").alias("total_pos"),
         F.sum(F.when(F.col("match_status") == "THREE_WAY_MATCHED", 1).otherwise(0)).alias("three_way_matched_count"),
         F.sum(F.when(F.col("match_status") == "AMOUNT_MISMATCH", 1).otherwise(0)).alias("amount_mismatch_count"),
+        F.sum(F.when(F.col("match_status") == "EXTRACTION_MISMATCH", 1).otherwise(0)).alias("extraction_mismatch_count"),
         F.sum(F.when(F.col("status") == "PENDING", 1).otherwise(0)).alias("pending_invoices"),
         F.max("invoice_date").alias("last_invoice_date")
     )
@@ -83,6 +84,7 @@ gold_dim_vendor = (
         F.coalesce(F.col("total_pos"), F.lit(0)).alias("total_purchase_orders"),
         F.coalesce(F.col("three_way_matched_count"), F.lit(0)).alias("three_way_matched_invoices"),
         F.coalesce(F.col("amount_mismatch_count"), F.lit(0)).alias("amount_mismatch_invoices"),
+        F.coalesce(F.col("extraction_mismatch_count"), F.lit(0)).alias("extraction_mismatch_invoices"),
         F.coalesce(F.col("pending_invoices"), F.lit(0)).alias("pending_invoices"),
         F.coalesce(F.col("total_payments"), F.lit(0)).alias("total_payments_count"),
         F.coalesce(F.col("total_paid_amount"), F.lit(0.0)).alias("total_paid_amount_inr"),
@@ -214,6 +216,9 @@ gold_fact_invoices = (
         F.col("gstin_vendor"),
         F.col("tds_applicable"),
         F.col("tds_rate"),
+        # Data provenance — which source systems contributed data for this invoice
+        F.col("pdf_file_path"),
+        F.col("data_source"),
         F.current_timestamp().alias("_gold_processed_at")
     )
 )

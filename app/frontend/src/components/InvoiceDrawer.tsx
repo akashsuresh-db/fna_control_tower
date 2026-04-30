@@ -9,7 +9,7 @@
  */
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, X, AlertTriangle, CheckCircle, XCircle, Download, Loader2 } from "lucide-react";
+import { FileText, X, AlertTriangle, CheckCircle, XCircle, Download, Loader2, Database, Eye } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -29,6 +29,9 @@ export type InvoiceDetail = {
   payment_terms: string | null;
   raw_text: string;
   file_path: string;
+  // Data provenance
+  data_source: "ERP_ONLY" | "ERP_AND_PDF" | string;
+  has_source_pdf: boolean;
 };
 
 // ─── Quarantine Badge ─────────────────────────────────────────
@@ -41,10 +44,11 @@ function QuarantineBadge({ reason }: { reason: string | null }) {
       </span>
     );
   const colors: Record<string, string> = {
-    AMOUNT_MISMATCH: "bg-amber-500/15 text-amber-400 border-amber-500/20",
-    NO_PO_REFERENCE: "bg-red-500/15 text-red-400 border-red-500/20",
-    DUPLICATE: "bg-purple-500/15 text-purple-400 border-purple-500/20",
-    MISSING_FIELDS: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+    AMOUNT_MISMATCH:     "bg-amber-500/15 text-amber-400 border-amber-500/20",
+    NO_PO_REFERENCE:     "bg-red-500/15 text-red-400 border-red-500/20",
+    EXTRACTION_MISMATCH: "bg-purple-500/15 text-purple-400 border-purple-500/20",
+    DUPLICATE:           "bg-purple-500/15 text-purple-400 border-purple-500/20",
+    MISSING_FIELDS:      "bg-orange-500/15 text-orange-400 border-orange-500/20",
   };
   const cls = colors[reason] ?? "bg-red-500/15 text-red-400 border-red-500/20";
   return (
@@ -78,6 +82,7 @@ function InvoicePanel({
     setDetail(null);
     setPdfLoading(true);
     setPdfError(false);
+
     fetch(`/api/invoice/${encodeURIComponent(invoiceId)}`)
       .then((r) => r.json())
       .then((d) => {
@@ -99,6 +104,18 @@ function InvoicePanel({
           <FileText size={15} className="text-db-blue flex-shrink-0" />
           <span className="text-sm font-semibold text-text-primary truncate">{invoiceId}</span>
           {detail && <QuarantineBadge reason={detail.quarantine_reason} />}
+          {/* Data source badge */}
+          {detail && (
+            <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border flex-shrink-0 ${
+              detail.data_source === "ERP_AND_PDF"
+                ? "bg-teal-500/10 text-teal-400 border-teal-500/20"
+                : "bg-slate-500/10 text-slate-400 border-slate-500/20"
+            }`}>
+              <Database size={9} />
+              {detail.data_source === "ERP_AND_PDF" ? "ERP + PDF" : "ERP System"}
+              {detail.has_source_pdf && <Eye size={9} className="ml-0.5" />}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0 ml-2">
           {/* Download button */}
@@ -159,20 +176,43 @@ function InvoicePanel({
               {/* Amount mismatch callout */}
               {detail.quarantine_reason === "AMOUNT_MISMATCH" && detail.po_amount > 0 && (
                 <div className="mt-2 px-2 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px]">
-                  <strong>Mismatch:</strong> Invoice {fmt(detail.invoice_amount)} vs PO {fmt(detail.po_amount)} —
+                  <strong>ERP / PO Mismatch:</strong> Invoice {fmt(detail.invoice_amount)} vs PO {fmt(detail.po_amount)} —
                   diff {fmt(Math.abs(detail.invoice_amount - detail.po_amount))}{" "}
                   ({((Math.abs(detail.invoice_amount - detail.po_amount) / detail.po_amount) * 100).toFixed(1)}%)
+                </div>
+              )}
+              {/* AI Extraction mismatch callout */}
+              {detail.quarantine_reason === "EXTRACTION_MISMATCH" && (
+                <div className="mt-2 px-2 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px]">
+                  <strong>AI Extraction Alert:</strong> The amount on the uploaded PDF does not match the ERP-recorded invoice
+                  amount ({fmt(detail.invoice_amount)}). Possible tampering or OCR error. View the source PDF to compare.
                 </div>
               )}
             </div>
 
             {/* ── PDF viewer ── */}
-            <div className="flex-1 relative min-h-0">
+            <div className="flex-1 relative min-h-0 flex flex-col">
+              {/* Source label banner — tells the user what they're looking at */}
+              {detail && (
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium flex-shrink-0 ${
+                  detail.has_source_pdf
+                    ? "bg-teal-500/8 border-b border-teal-500/20 text-teal-400"
+                    : "bg-slate-500/8 border-b border-slate-500/15 text-slate-500"
+                }`}>
+                  {detail.has_source_pdf ? (
+                    <><Eye size={10} /> SOURCE PDF — Original vendor-uploaded document from UC Volume</>
+                  ) : (
+                    <><Database size={10} /> GENERATED — Reconstructed from ERP data (no uploaded PDF)</>
+                  )}
+                </div>
+              )}
               {/* PDF loading spinner overlay */}
               {pdfLoading && !pdfError && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-bg-card z-10">
                   <Loader2 size={20} className="animate-spin text-db-blue" />
-                  <span className="text-xs text-text-muted">Generating PDF…</span>
+                  <span className="text-xs text-text-muted">
+                    {detail?.has_source_pdf ? "Loading source document…" : "Generating from ERP data…"}
+                  </span>
                 </div>
               )}
 

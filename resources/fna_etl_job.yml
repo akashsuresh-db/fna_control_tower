@@ -65,22 +65,7 @@ resources:
           environment_key: default
           timeout_seconds: 1800
 
-        # Step 4: AI-powered invoice extraction (after all gold layers)
-        - task_key: invoice_ai_processing
-          depends_on:
-            - task_key: gold_p2p
-            - task_key: gold_o2c
-            - task_key: gold_r2r
-          notebook_task:
-            notebook_path: ../notebooks/05_Invoice_AI_Processing.py
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-            source: WORKSPACE
-          environment_key: default
-          timeout_seconds: 1800
-
-        # Step 5: Create unified KPI view for Genie
+        # Step 4: Create unified KPI view for Genie
         - task_key: create_kpi_view
           depends_on:
             - task_key: gold_p2p
@@ -95,7 +80,63 @@ resources:
           environment_key: default
           timeout_seconds: 600
 
+        # Step 5: Create Genie Space via API (idempotent — reuses existing space if title matches)
+        - task_key: create_genie_space
+          depends_on:
+            - task_key: create_kpi_view
+          notebook_task:
+            notebook_path: ../notebooks/07_Create_Genie_Space.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              warehouse_id: ${resources.sql_warehouses.fna_warehouse.id}
+            source: WORKSPACE
+          environment_key: mas_setup
+          timeout_seconds: 600
+
+        # Step 6: Attach gold tables + finance instructions to the Genie Space
+        - task_key: configure_genie_space
+          depends_on:
+            - task_key: create_genie_space
+          notebook_task:
+            notebook_path: ../notebooks/08_Configure_Genie_Space.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              warehouse_id: ${resources.sql_warehouses.fna_warehouse.id}
+              genie_space_id: ""  # read from task value published by create_genie_space
+            source: WORKSPACE
+          environment_key: mas_setup
+          timeout_seconds: 600
+
+        # Step 7: Register LangGraph agent (Claude + GenieTool) and deploy as MAS endpoint
+        - task_key: deploy_mas_supervisor
+          depends_on:
+            - task_key: configure_genie_space
+          notebook_task:
+            notebook_path: ../notebooks/09_Deploy_MAS_Supervisor.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              serving_endpoint_name: ${var.serving_endpoint_name}
+              claude_endpoint_name: ${var.claude_endpoint_name}
+              genie_space_id: ""  # read from task value published by create_genie_space
+            source: WORKSPACE
+          environment_key: mas_setup
+          timeout_seconds: 3600
+
       environments:
         - environment_key: default
           spec:
             client: "1"
+
+        - environment_key: mas_setup
+          spec:
+            client: "1"
+            dependencies:
+              - databricks-sdk>=0.28
+              - langchain-databricks>=0.3
+              - langgraph>=0.2
+              - databricks-agents>=0.5
+              - mlflow>=2.17
+              - requests
