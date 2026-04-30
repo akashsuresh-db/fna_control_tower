@@ -105,11 +105,11 @@ if GENIE_SPACE_ID:
 
 llm = ChatDatabricks(endpoint=CLAUDE_ENDPOINT, temperature=0.1)
 
-agent = create_react_agent(
-    model=llm,
-    tools=tools,
-    state_modifier=SYSTEM_PROMPT,
-)
+try:
+    # langgraph <0.3 uses state_modifier; 0.3+ uses prompt
+    agent = create_react_agent(model=llm, tools=tools, state_modifier=SYSTEM_PROMPT)
+except TypeError:
+    agent = create_react_agent(model=llm, tools=tools, prompt=SYSTEM_PROMPT)
 
 print("✓ Agent built")
 
