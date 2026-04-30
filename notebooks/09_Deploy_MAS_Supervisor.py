@@ -42,10 +42,18 @@ ENDPOINT_NAME   = dbutils.widgets.get("serving_endpoint_name")
 CLAUDE_ENDPOINT = dbutils.widgets.get("claude_endpoint_name")
 _genie_override = dbutils.widgets.get("genie_space_id")
 
+import os
 ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-HOST = ctx.apiUrl().get().rstrip("/")
+HOST  = ctx.apiUrl().get().rstrip("/")
+TOKEN = ctx.apiToken().get()
 
-w = WorkspaceClient()
+# Force MLflow + SDK to use THIS workspace's host/token
+os.environ["DATABRICKS_HOST"]  = HOST
+os.environ["DATABRICKS_TOKEN"] = TOKEN
+mlflow.set_tracking_uri("databricks")
+mlflow.set_registry_uri("databricks-uc")
+
+w = WorkspaceClient(host=HOST, token=TOKEN)
 
 # ── Read Genie Space ID ───────────────────────────────────────────────────────
 # Priority: widget override → task value from create_genie_space (task 07)
@@ -171,8 +179,6 @@ Genie Space ID: {space_id or 'Not configured'}"""
                 break
         return {"output": answer, "messages": [{"role": "assistant", "content": answer}]}
 
-
-mlflow.set_registry_uri("databricks-uc")
 
 with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
     model_info = mlflow.pyfunc.log_model(
