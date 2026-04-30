@@ -18,8 +18,12 @@ dbutils.widgets.text("claude_endpoint_name", "fna-claude-sonnet-4-5", "Claude LL
 dbutils.widgets.text("genie_space_id", "", "Genie Space ID (override; uses task value if empty)")
 
 # COMMAND ----------
-# Dependencies are pre-installed via the job's environment spec (fna_etl_job.yml)
-# databricks-agents, langchain-databricks, langgraph are cached between runs.
+
+# MAGIC %pip install langchain-databricks>=0.3 langgraph>=0.2 -q
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
