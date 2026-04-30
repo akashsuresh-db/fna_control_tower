@@ -19,7 +19,7 @@ dbutils.widgets.text("genie_space_id", "", "Genie Space ID (override; uses task 
 
 # COMMAND ----------
 
-# MAGIC %pip install langchain>=0.2 langchain-databricks>=0.3 langgraph>=0.2 -q
+# MAGIC %pip install "langchain>=0.2" "langchain-databricks>=0.4" "langgraph>=0.2" -q
 
 # COMMAND ----------
 
@@ -128,11 +128,18 @@ class MASAgentWrapper(mlflow.pyfunc.PythonModel):
         import json
         cfg = context.model_config
         from langchain_databricks import ChatDatabricks
-        from langchain_databricks.genie import GenieTool
         from langgraph.prebuilt import create_react_agent
 
         space_id = cfg.get("genie_space_id", "")
-        tools = [GenieTool(space_id=space_id)] if space_id else []
+        tools = []
+        if space_id:
+            try:
+                from langchain_databricks.genie import GenieTool
+                tools = [GenieTool(space_id=space_id)]
+                print(f"GenieTool loaded for space: {space_id}")
+            except ImportError:
+                print("GenieTool not available in this langchain-databricks version")
+
         llm = ChatDatabricks(endpoint=cfg["claude_endpoint"], temperature=0.1)
 
         system_prompt = f"""You are the Finance & Accounting Control Tower supervisor.
@@ -183,9 +190,7 @@ with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
             "langchain-databricks>=0.3",
             "langgraph>=0.2",
         ],
-        input_example={
-            "messages": [{"role": "user", "content": "Show me the top overdue invoices"}]
-        },
+        # No input_example — avoids load_context being called at log time
     )
     print(f"✓ Model logged: {model_info.model_uri}")
 
