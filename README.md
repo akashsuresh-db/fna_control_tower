@@ -7,20 +7,21 @@
 ## Table of Contents
 
 1. [Business Problem](#1-business-problem)
-2. [Value Proposition](#2-value-proposition)
-3. [How Databricks Solves It](#3-how-databricks-solves-it)
-4. [Platform Architecture](#4-platform-architecture)
-5. [Process Flows](#5-process-flows)
-6. [AI Layer](#6-ai-layer)
-7. [Finance Operations App](#7-finance-operations-app)
-8. [Conversational AI — Multi-Agent System](#8-conversational-ai--multi-agent-system)
-9. [Data Quality & Governance](#9-data-quality--governance)
-10. [Key Metrics](#10-key-metrics)
-11. [Tech Stack](#11-tech-stack)
-12. [Quick Reference](#12-quick-reference)
-13. [Repo Structure](#13-repo-structure)
-14. [Setup & Deployment](#14-setup--deployment)
-15. [Demo Walkthrough](#15-demo-walkthrough)
+2. [Target Industry & Regulatory Context](#2-target-industry--regulatory-context)
+3. [Value Proposition](#3-value-proposition)
+4. [How Databricks Solves It](#4-how-databricks-solves-it)
+5. [Platform Architecture](#5-platform-architecture)
+6. [Process Flows](#6-process-flows)
+7. [AI Layer](#7-ai-layer)
+8. [Finance Operations App](#8-finance-operations-app)
+9. [Conversational AI — Multi-Agent System](#9-conversational-ai--multi-agent-system)
+10. [Data Quality & Governance](#10-data-quality--governance)
+11. [Key Metrics](#11-key-metrics)
+12. [Tech Stack](#12-tech-stack)
+13. [Quick Reference](#13-quick-reference)
+14. [Repo Structure](#14-repo-structure)
+15. [Setup & Deployment](#15-setup--deployment)
+16. [Demo Walkthrough](#16-demo-walkthrough)
 
 ---
 
@@ -47,7 +48,50 @@ Finance data is **fragmented by design** — ERPs are transactional systems opti
 
 ---
 
-## 2. Value Proposition
+## 2. Target Industry & Regulatory Context
+
+### Primary Industry Verticals
+
+This platform is designed for **mid-to-large enterprises (₹500 Cr+ revenue)** with high-volume finance operations and multi-entity / multi-geography structures where manual close, AP/AR, and reconciliation processes break down.
+
+| Industry | Sub-Vertical | Why This Platform Fits |
+|---|---|---|
+| **Manufacturing & Industrial** | Automotive, heavy engineering, capital goods, electronics | High PO + GRN volumes drive 3-way match complexity; AP exception queues balloon at month-end |
+| **Consumer Goods / FMCG / Retail** | Packaged foods, apparel, e-commerce, chain retail | Long-tail vendor base, high invoice volumes, distributor/dealer collections (O2C aging) |
+| **Pharma & Life Sciences** | Pharma manufacturing, medical devices, hospitals | Strict audit trail requirements; complex tax structure on inputs vs. outputs |
+| **Services & IT** | IT services, consulting, BPO, professional services | T&E + sub-contractor invoices; revenue recognition complexity in O2C |
+| **BFSI** | Banks, NBFCs, insurance, capital markets back-office | Reconciliation-heavy GL workflows; regulatory reporting cadence |
+| **Energy & Utilities** | Power, oil & gas, renewables | High-value contracts, complex procurement, statutory levies |
+| **Logistics & Transportation** | 3PL, warehousing, fleet ops | Volume-driven freight invoices, multi-leg cost allocation |
+
+### Buyer Personas
+
+- **CFO / Controller / Finance Head** — wants real-time working capital visibility, faster close, audit-ready trail
+- **Head of Shared Services / GBS** — needs to scale AP/AR operations without proportional headcount growth
+- **VP / Director of Tax & Compliance** — needs GST-ready invoice data and provable controls
+- **CIO / Head of Data Platform** — wants finance to consolidate onto the same lakehouse used by other domains
+
+### Regulatory Applicability
+
+The reference data model and validation rules in this demo are built around **Indian regulatory norms** (the synthetic data uses ₹/INR, GSTIN, CGST/SGST, IFSC, etc.). The architecture is jurisdiction-agnostic — only the field set, validation rules, and report formats vary by geography.
+
+| Jurisdiction | Regulation | What the Platform Supports |
+|---|---|---|
+| **🇮🇳 India** | **GST (Goods & Services Tax)** — CGST/SGST/IGST | GSTIN validation on vendor/customer master, tax extraction from invoice PDFs via `ai_extract`, e-invoice-ready field set |
+| **🇮🇳 India** | **Income Tax Act** — TDS / TCS provisions | TDS-applicable vendor flag in dim_vendor, TDS rate fields on invoices |
+| **🇮🇳 India** | **Companies Act 2013** — IndAS / Schedule III | Trial balance + financial statement classification; period-end snapshots |
+| **🇮🇳 India** | **CARO 2020** — auditor reporting (Indian SOX equivalent) | Full UC lineage from source file to Gold; exception quarantine + approval audit trail in Lakebase |
+| **🇮🇳 India** | **RBI / FEMA** — for entities with FX exposure | Currency-aware fields; not enabled by default in the demo |
+| **🇺🇸 USA** | **SOX (Sarbanes-Oxley)** | DLT Expectations enforce data-quality contracts; UC RBAC + lineage form the audit primitives required by ICFR / 404 attestations |
+| **🇪🇺 EU** | **GDPR** — when customer/vendor PII is processed | UC RBAC, row-level security available; not enabled by default in the demo |
+| **🇸🇬 Singapore** | **MAS Notice 654 / IRAS GST** | Pattern reusable; extend `ai_extract` field list and validation rules to local invoice format |
+| **🇦🇪 UAE / 🇸🇦 KSA** | **FTA / ZATCA e-invoicing** | Pattern reusable; extend `ai_extract` field list and validation rules to local invoice format |
+
+> **Scope note:** the synthetic demo dataset is India-centric. To deploy in other jurisdictions, swap the `ai_extract` field array (notebook 05) and the DLT validation rules (notebook 01) for the local invoice format and tax regime. The medallion architecture, app, MAS supervisor, and Genie integration are unchanged.
+
+---
+
+## 3. Value Proposition
 
 ### What This Platform Delivers
 
@@ -76,7 +120,7 @@ Reactive exception handling        →   Proactive DQ enforcement (DLT Expectati
 
 ---
 
-## 3. How Databricks Solves It
+## 4. How Databricks Solves It
 
 Each capability maps directly to a Databricks product:
 
@@ -95,7 +139,7 @@ Each capability maps directly to a Databricks product:
 
 ---
 
-## 4. Platform Architecture
+## 5. Platform Architecture
 
 ### Medallion Lakehouse Architecture
 
@@ -165,9 +209,9 @@ fna_control_tower.finance_and_accounting.<table_name>
 
 ---
 
-## 5. Process Flows
+## 6. Process Flows
 
-### 5.1 Procure-to-Pay (P2P)
+### 6.1 Procure-to-Pay (P2P)
 
 ```
 Vendor Invoice arrives (email / portal / EDI)
@@ -207,7 +251,7 @@ Vendor Invoice arrives (email / portal / EDI)
 
 ---
 
-### 5.2 Order-to-Cash (O2C)
+### 6.2 Order-to-Cash (O2C)
 
 ```
 Sales Order created
@@ -235,7 +279,7 @@ Sales Order created
 
 ---
 
-### 5.3 Record-to-Report (R2R)
+### 6.3 Record-to-Report (R2R)
 
 ```
 Journal entries posted in ERP
@@ -260,9 +304,9 @@ Journal entries posted in ERP
 
 ---
 
-## 6. AI Layer
+## 7. AI Layer
 
-### 6.1 Invoice AI Processing (`ai_parse_document` + `ai_extract`)
+### 7.1 Invoice AI Processing (`ai_parse_document` + `ai_extract`)
 
 Databricks built-in SQL functions — no custom model deployment, no API keys, no prompt engineering. Because DLT pipelines cannot call `ai_parse_document()` (no cluster-side inference support), AI extraction runs in a **dedicated pre-processing notebook** (`05_Invoice_AI_Processing.py`) after the DLT Silver layer completes, then writes to `silver_invoice_extractions`.
 
@@ -286,13 +330,13 @@ FROM silver_parsed_invoices;
 
 **Validation:** Extracted `total_amount` is reconciled against the ERP-sourced amount (±2% tolerance). Discrepancies are flagged as `EXTRACTION_MISMATCH` and quarantined for human review.
 
-### 6.2 Genie AI Analyst
+### 7.2 Genie AI Analyst
 
 A single Genie Space is attached to all 9 Gold tables (`gold_dim_vendor`, `gold_fact_invoices`, `gold_fact_payments`, `gold_dim_customer`, `gold_fact_sales`, `gold_fact_collections`, `gold_fact_gl`, `gold_fact_trial_balance`, `finance_kpis`) plus natural language finance instructions. Finance users query in plain English — no SQL required.
 
 The Genie Space is **created and configured automatically** by the ETL job (notebooks 07 and 08) — it is not a manual setup step.
 
-### 6.3 Multi-Agent AI Chat (LangGraph + Claude)
+### 7.3 Multi-Agent AI Chat (LangGraph + Claude)
 
 The conversational AI sidebar in the app connects to a **deployed MAS (Model-Agnostic Supervisor) endpoint** built with LangGraph:
 
@@ -313,7 +357,7 @@ The agent is registered in Unity Catalog (`fna_control_tower.finance_and_account
 
 ---
 
-## 7. Finance Operations App
+## 8. Finance Operations App
 
 **URL:** https://fna-control-tower-7405605456174026.6.azure.databricksapps.com
 
@@ -359,7 +403,7 @@ Clicking an invoice ID in the AP tab or chat opens a slide-in drawer showing:
 
 ---
 
-## 8. Conversational AI — Multi-Agent System
+## 9. Conversational AI — Multi-Agent System
 
 ### Architecture
 
@@ -416,7 +460,7 @@ If the MAS endpoint returns a complete answer, it is streamed to the frontend in
 
 ---
 
-## 9. Data Quality & Governance
+## 10. Data Quality & Governance
 
 ### DLT Expectations
 
@@ -445,7 +489,7 @@ Source file (UC Volume)
 
 ---
 
-## 10. Key Metrics
+## 11. Key Metrics
 
 ### Data Volume (Demo Dataset)
 
@@ -479,7 +523,7 @@ Source file (UC Volume)
 
 ---
 
-## 11. Tech Stack
+## 12. Tech Stack
 
 ### Data Platform
 
@@ -516,7 +560,7 @@ Source file (UC Volume)
 
 ---
 
-## 12. Quick Reference
+## 13. Quick Reference
 
 | Resource | Value |
 |---|---|
@@ -533,7 +577,7 @@ Source file (UC Volume)
 
 ---
 
-## 13. Repo Structure
+## 14. Repo Structure
 
 ```
 fna_control_tower/
@@ -582,7 +626,7 @@ fna_control_tower/
 
 ---
 
-## 14. Setup & Deployment
+## 15. Setup & Deployment
 
 The entire platform is deployed via a **Databricks Asset Bundle** (`databricks bundle deploy`). The ETL job is a 9-task orchestrated workflow that handles everything from synthetic data generation through to deploying the MAS supervisor endpoint.
 
@@ -643,7 +687,7 @@ databricks apps deploy fna-control-tower --source-code-path app/ --profile fevm-
 
 ---
 
-## 15. Demo Walkthrough
+## 16. Demo Walkthrough
 
 ### Recommended Script (20 minutes)
 
