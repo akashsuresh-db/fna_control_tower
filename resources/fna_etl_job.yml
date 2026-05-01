@@ -122,7 +122,7 @@ resources:
               claude_endpoint_name: ${var.claude_endpoint_name}
               genie_space_id: ""  # read from task value published by create_genie_space
             source: WORKSPACE
-          environment_key: default
+          environment_key: mas_setup
           timeout_seconds: 3600
 
       environments:
@@ -130,6 +130,16 @@ resources:
           spec:
             client: "1"
 
+        # MAS supervisor + Genie integration deps. Matches the runtime imports in
+        # notebook 09. langchain-databricks (old name) is replaced by databricks-langchain
+        # which is the maintained package (>=0.4) carrying GenieAgent.
         - environment_key: mas_setup
           spec:
             client: "1"
+            dependencies:
+              - databricks-sdk>=0.30
+              - databricks-langchain>=0.4
+              - langgraph>=0.2
+              - databricks-agents>=0.5
+              - mlflow>=2.17
+              - requests

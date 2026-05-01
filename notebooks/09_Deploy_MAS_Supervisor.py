@@ -19,7 +19,7 @@ dbutils.widgets.text("genie_space_id", "", "Genie Space ID (override; uses task 
 
 # COMMAND ----------
 
-# MAGIC %pip install langchain langchain-databricks langgraph -q
+# MAGIC %pip install -q -U langchain databricks-langchain langgraph databricks-agents mlflow
 
 # COMMAND ----------
 
@@ -83,7 +83,7 @@ print(f"\nDeploying: {MODEL_NAME}  →  endpoint: {ENDPOINT_NAME}")
 
 # ── Build the LangGraph finance supervisor agent ──────────────────────────────
 from langchain_core.messages import SystemMessage
-from langchain_databricks import ChatDatabricks
+from databricks_langchain import ChatDatabricks
 from langgraph.prebuilt import create_react_agent
 
 SYSTEM_PROMPT = f"""You are the Finance & Accounting Control Tower supervisor agent.
@@ -104,12 +104,30 @@ tools = []
 
 if GENIE_SPACE_ID:
     try:
-        from langchain_databricks.genie import GenieTool
-        genie_tool = GenieTool(space_id=GENIE_SPACE_ID)
-        tools.append(genie_tool)
+        from databricks_langchain.genie import GenieAgent
+        from langchain_core.tools import tool as _lc_tool
+
+        _genie = GenieAgent(genie_space_id=GENIE_SPACE_ID, genie_agent_name="finance_genie",
+                            description="Genie space for finance analytics on gold tables")
+
+        @_lc_tool
+        def query_finance_data(question: str) -> str:
+            """Query the finance data warehouse via Genie for any analytics question."""
+            try:
+                r = _genie.invoke({"messages": [{"role": "user", "content": question}]})
+                msgs = r.get("messages", []) if isinstance(r, dict) else []
+                for m in reversed(msgs):
+                    c = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+                    if c:
+                        return str(c)
+                return str(r)
+            except Exception as e:
+                return f"(Genie query failed: {e})"
+
+        tools.append(query_finance_data)
         print(f"✓ Genie tool attached (space: {GENIE_SPACE_ID})")
-    except ImportError:
-        print("⚠ langchain_databricks.genie not available — deploy langchain-databricks>=0.3")
+    except ImportError as e:
+        print(f"⚠ databricks_langchain.genie not available: {e}")
 
 llm = ChatDatabricks(endpoint=CLAUDE_ENDPOINT, temperature=0.1)
 
@@ -137,18 +155,38 @@ class MASAgentWrapper(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
         import json
         cfg = context.model_config
-        from langchain_databricks import ChatDatabricks
+        # databricks-langchain (new name, >=0.4) replaced langchain-databricks (frozen at 0.1.2)
+        from databricks_langchain import ChatDatabricks
         from langgraph.prebuilt import create_react_agent
 
         space_id = cfg.get("genie_space_id", "")
         tools = []
         if space_id:
             try:
-                from langchain_databricks.genie import GenieTool
-                tools = [GenieTool(space_id=space_id)]
-                print(f"GenieTool loaded for space: {space_id}")
-            except ImportError:
-                print("GenieTool not available in this langchain-databricks version")
+                from databricks_langchain.genie import GenieAgent
+                from langchain_core.tools import tool
+
+                _genie = GenieAgent(genie_space_id=space_id, genie_agent_name="finance_genie",
+                                    description="Genie space for finance analytics on gold tables")
+
+                @tool
+                def query_finance_data(question: str) -> str:
+                    """Query the finance data warehouse via Genie for any analytics question."""
+                    try:
+                        r = _genie.invoke({"messages": [{"role": "user", "content": question}]})
+                        msgs = r.get("messages", []) if isinstance(r, dict) else []
+                        for m in reversed(msgs):
+                            c = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+                            if c:
+                                return str(c)
+                        return str(r)
+                    except Exception as e:
+                        return f"(Genie query failed: {e})"
+
+                tools = [query_finance_data]
+                print(f"Genie tool loaded for space: {space_id}")
+            except ImportError as e:
+                print(f"GenieAgent not available: {e}")
 
         llm = ChatDatabricks(endpoint=cfg["claude_endpoint"], temperature=0.1)
 
@@ -201,7 +239,9 @@ with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
         pip_requirements=[
             "mlflow>=2.13",
             "langchain>=0.2",
-            "langchain-databricks>=0.3",
+            # langchain-databricks was renamed to databricks-langchain at v0.4+;
+            # the old package is frozen at 0.1.2 so >=0.3 can never resolve.
+            "databricks-langchain>=0.4",
             "langgraph>=0.2",
         ],
         # No input_example — avoids load_context being called at log time
@@ -243,7 +283,8 @@ except Exception as e:
         scale_to_zero_enabled=True,
         environment_vars={"GENIE_SPACE_ID": GENIE_SPACE_ID},
     )
-    config = EndpointCoreConfigInput(served_entities=[served_entity])
+    # Newer databricks-sdk requires `name` as a positional arg on EndpointCoreConfigInput.
+    config = EndpointCoreConfigInput(name=ENDPOINT_NAME, served_entities=[served_entity])
 
     try:
         # Update if exists, create otherwise

@@ -45,13 +45,13 @@ targets:
     # No mode: development — resources use exact project-specific names with no dev prefix.
     # All infrastructure is bundle-created fresh; no pre-existing workspace resources referenced.
     workspace:
-      host: https://adb-7405605456174026.6.azuredatabricks.net
+      host: https://fevm-fna-control-tower-ws.cloud.databricks.com
       root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/fevm
     variables:
+      catalog: fna_control_tower_ws_catalog
       escalation_recipient: akash.s@databricks.com
       serving_endpoint_name: mas-2dcd8d5a-endpoint
       claude_endpoint_name: databricks-claude-sonnet-4-5
-      # catalog:               fna_control_tower
       # schema:                finance_and_accounting
       # lakebase_instance_name: finance-ops-db
 
