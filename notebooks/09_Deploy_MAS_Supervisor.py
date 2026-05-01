@@ -128,6 +128,8 @@ print("✓ Agent built")
 # CompiledStateGraph. We wrap the agent in a PythonModel instead.
 
 import mlflow.pyfunc
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, ColSpec, DataType
 
 class MASAgentWrapper(mlflow.pyfunc.PythonModel):
     """Wraps a LangGraph ReAct agent for MLflow pyfunc serving."""
@@ -180,10 +182,16 @@ Genie Space ID: {space_id or 'Not configured'}"""
         return {"output": answer, "messages": [{"role": "assistant", "content": answer}]}
 
 
+signature = ModelSignature(
+    inputs=Schema([ColSpec(DataType.string, "messages")]),
+    outputs=Schema([ColSpec(DataType.string, "output")]),
+)
+
 with mlflow.start_run(run_name=f"mas-fna-supervisor-v{int(time.time())}"):
     model_info = mlflow.pyfunc.log_model(
         artifact_path="agent",
         python_model=MASAgentWrapper(),
+        signature=signature,
         model_config={
             "genie_space_id": GENIE_SPACE_ID,
             "claude_endpoint": CLAUDE_ENDPOINT,
