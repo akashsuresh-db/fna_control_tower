@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, AlertTriangle, Shield, CreditCard, Play, Square,
-  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown, Send
+  CheckCircle2, XCircle, Clock, ArrowUpRight, ThumbsUp, ThumbsDown, Send,
+  Paperclip,
 } from "lucide-react";
 import { useSSE } from "../hooks/useSSE";
 import { useMetrics } from "../hooks/useMetrics";
@@ -11,6 +12,7 @@ import GreetingBanner from "./GreetingBanner";
 import ExceptionDrawer from "./ExceptionDrawer";
 import InvoiceDrawer from "./InvoiceDrawer";
 import SummaryCard from "./SummaryCard";
+import TopSummaryCard from "./TopSummaryCard";
 import { inr, matchStatusColor, matchStatusBg, matchStatusLabel, formatNum } from "../utils";
 
 type P2PMetrics = {
@@ -124,6 +126,9 @@ export default function APTab({ userName = "User", onNotify }: Props) {
 
   return (
     <div className="flex flex-col gap-4 h-full">
+      {/* Top LLM glance summary — uses live gold data + Claude */}
+      <TopSummaryCard tab="P2P" />
+
       {/* KPI Strip */}
       {m && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -218,6 +223,15 @@ export default function APTab({ userName = "User", onNotify }: Props) {
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="font-mono text-xs text-text-muted">{d.invoice_id as string}</span>
+                        {/* Paperclip indicates a source PDF exists in UC Volume — click-to-view shows the real document */}
+                        {d.data_source === "ERP_AND_PDF" && (
+                          <span
+                            title="Source PDF in UC Volume — click to view the original"
+                            className="flex items-center text-db-blue"
+                          >
+                            <Paperclip className="w-3.5 h-3.5" />
+                          </span>
+                        )}
                         <span className="text-sm text-text-primary truncate font-medium">
                           {d.vendor_name as string}
                         </span>

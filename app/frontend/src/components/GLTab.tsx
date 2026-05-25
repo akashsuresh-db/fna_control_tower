@@ -10,6 +10,13 @@ import MetricCard from "./MetricCard";
 import GreetingBanner from "./GreetingBanner";
 import ExceptionDrawer from "./ExceptionDrawer";
 import SummaryCard from "./SummaryCard";
+import TopSummaryCard from "./TopSummaryCard";
+import GLReconCard from "./GLReconCard";
+
+// 9 demo accounts highlighted in the GL tab Trial Balance view.
+// Keeps the demo focused: AR, Inventory, PPE, AP, LT Debt, Retained Earnings,
+// Service Revenue, Salaries, IT Expense — one per major TB section.
+const DEMO_ACCOUNTS = new Set(["1100", "1200", "1500", "2000", "2500", "3100", "4100", "5100", "5500"]);
 import { inr, formatNum } from "../utils";
 
 type R2RMetrics = {
@@ -61,6 +68,12 @@ export default function GLTab({ userName = "User" }: Props) {
 
   return (
     <div className="flex flex-col gap-4 h-full">
+      {/* Top LLM glance summary — uses live gold data + Claude */}
+      <TopSummaryCard tab="R2R" />
+
+      {/* Sub-ledger ↔ GL reconciliation — single-glance proof the loop is closed */}
+      <GLReconCard />
+
       {/* KPI Strip */}
       {m && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -144,7 +157,7 @@ export default function GLTab({ userName = "User" }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {m?.trial_balance.map((row, i) => (
+                    {m?.trial_balance.filter(row => DEMO_ACCOUNTS.has(row.account_code)).map((row, i) => (
                       <motion.tr
                         key={row.account_code}
                         initial={{ opacity: 0 }}

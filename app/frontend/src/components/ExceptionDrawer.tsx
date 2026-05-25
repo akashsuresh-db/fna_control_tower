@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, AlertTriangle, ShieldAlert, Info, FileText } from "lucide-react";
+import { X, AlertTriangle, ShieldAlert, Info, FileText, ShieldCheck } from "lucide-react";
 import { severityBadge, inr } from "../utils";
 import type { SSEEvent } from "../hooks/useSSE";
+import AIvsERPCard from "./AIvsERPCard";
 
 type Props = {
   exception: SSEEvent | null;
@@ -10,6 +12,7 @@ type Props = {
 };
 
 export default function ExceptionDrawer({ exception, onClose, onViewInvoice }: Props) {
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   return (
     <AnimatePresence>
       {exception && (
@@ -153,6 +156,24 @@ export default function ExceptionDrawer({ exception, onClose, onViewInvoice }: P
                     {exception.data.severity === "critical" ? "4 hours" : "24 hours"}
                   </div>
                 </div>
+
+                {/* Verify before approve — runs 8 credibility checks via /api/verify-invoice */}
+                {exception.data.invoice_id && (
+                  verifyingId === (exception.data.invoice_id as string) ? (
+                    <AIvsERPCard
+                      invoiceId={exception.data.invoice_id as string}
+                      onClose={() => setVerifyingId(null)}
+                    />
+                  ) : (
+                    <button
+                      onClick={() => setVerifyingId(exception.data.invoice_id as string)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-db-blue/40 bg-db-blue/10 text-db-blue text-sm font-semibold hover:bg-db-blue/20 transition"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      Verify before approve
+                    </button>
+                  )
+                )}
               </div>
             </div>
           </motion.div>

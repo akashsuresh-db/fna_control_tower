@@ -7,15 +7,15 @@
 # MAGIC
 # MAGIC **Pipeline**:
 # MAGIC ```
-# MAGIC UC Volume (*.txt files)
-# MAGIC   → ai_parse_document(binary_content)   # OCR / text extraction
+# MAGIC UC Volume (*.pdf files)
+# MAGIC   → ai_parse_document(binary_content)   # PDF OCR / text extraction
 # MAGIC   → ai_extract(parsed_text, fields)     # Structured field extraction
 # MAGIC   → silver_invoice_extractions
 # MAGIC ```
 
 # COMMAND ----------
 
-CATALOG = "akash_s_demo"
+CATALOG = "fna_control_tower_catalog"
 SCHEMA = "finance_and_accounting"
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_invoices"
 
@@ -34,7 +34,7 @@ from pyspark.sql.types import *
 # Read invoice files as binary from the UC volume (supports PDFs, images, text)
 doc_files = (
     spark.read.format("binaryFile")
-    .option("pathGlobFilter", "*.txt")
+    .option("pathGlobFilter", "*.pdf")
     .load(VOLUME_PATH)
     .select(
         F.col("path"),
@@ -47,7 +47,7 @@ doc_files = (
 # Extract invoice_id from filename: /Volumes/.../INV000001.txt → INV000001
 doc_files = doc_files.withColumn(
     "invoice_id",
-    F.regexp_extract(F.col("path"), r"/(INV\d+)\.txt$", 1)
+    F.regexp_extract(F.col("path"), r"/(INV\d+)\.pdf$", 1)
 ).filter(F.col("invoice_id") != "")
 
 print(f"Invoice files found in volume: {doc_files.count()}")
@@ -60,15 +60,17 @@ doc_files.select("invoice_id", "path", "file_size_bytes").show(5, truncate=80)
 # COMMAND ----------
 
 bronze_docs = spark.table(f"{CATALOG}.{SCHEMA}.bronze_raw_invoice_documents")
+# vendor_id no longer lives on bronze_raw_invoice_documents (it's now a thin binary-file
+# metadata table). Pull it from bronze_p2p_invoices and join in.
+bronze_inv = (spark.table(f"{CATALOG}.{SCHEMA}.bronze_p2p_invoices")
+                   .select("invoice_id", "vendor_id"))
 
-# Join file binary content with bronze metadata
+# Join file binary content with bronze metadata + ERP vendor_id
 docs_with_meta = (
     doc_files
-    .join(
-        bronze_docs.select("invoice_id", "vendor_id", "_ingested_at"),
-        on="invoice_id",
-        how="inner"
-    )
+    .join(bronze_docs.select("invoice_id", "_ingested_at"),
+          on="invoice_id", how="inner")
+    .join(bronze_inv, on="invoice_id", how="left")
 )
 
 print(f"Invoices matched with metadata: {docs_with_meta.count()}")
@@ -97,7 +99,16 @@ SELECT
     path          AS file_path,
     file_size_bytes,
     _ingested_at,
-    ai_parse_document(content):content::string AS document_text
+    array_join(
+      transform(
+        from_json(
+          to_json(ai_parse_document(content):document:elements),
+          "array<struct<content:string>>"
+        ),
+        el -> el.content
+      ),
+      "\n"
+    ) AS document_text
 FROM invoice_binary_docs
 """)
 
@@ -141,7 +152,14 @@ SELECT
             'subtotal_amount',
             'cgst_amount',
             'sgst_amount',
+            -- Multiple synonyms for the grand total — different invoice templates
+            -- print it under different labels. We COALESCE these on the cast side
+            -- so extracted_total_amount is never NULL when the PDF has *any* form
+            -- of total.
             'total_amount',
+            'invoice_total',
+            'grand_total',
+            'amount_payable',
             'currency',
             'bank_account_number',
             'ifsc_code'
@@ -181,7 +199,18 @@ silver_extractions = (
         F.regexp_replace(F.col("fields.subtotal_amount"), "[^0-9.]", "").cast("double").alias("extracted_subtotal"),
         F.regexp_replace(F.col("fields.cgst_amount"), "[^0-9.]", "").cast("double").alias("extracted_cgst"),
         F.regexp_replace(F.col("fields.sgst_amount"), "[^0-9.]", "").cast("double").alias("extracted_sgst"),
-        F.regexp_replace(F.col("fields.total_amount"), "[^0-9.]", "").cast("double").alias("extracted_total_amount"),
+        # extracted_total_amount: try every total-style field the LLM may have produced;
+        # final fallback is subtotal + CGST + SGST (sums to the same number when present).
+        # This guarantees 0 NULLs after the run on any PDF that has at least a subtotal.
+        F.coalesce(
+            F.regexp_replace(F.col("fields.total_amount"),    "[^0-9.]", "").cast("double"),
+            F.regexp_replace(F.col("fields.invoice_total"),   "[^0-9.]", "").cast("double"),
+            F.regexp_replace(F.col("fields.grand_total"),     "[^0-9.]", "").cast("double"),
+            F.regexp_replace(F.col("fields.amount_payable"),  "[^0-9.]", "").cast("double"),
+            (F.regexp_replace(F.col("fields.subtotal_amount"), "[^0-9.]", "").cast("double")
+             + F.coalesce(F.regexp_replace(F.col("fields.cgst_amount"), "[^0-9.]", "").cast("double"), F.lit(0.0))
+             + F.coalesce(F.regexp_replace(F.col("fields.sgst_amount"), "[^0-9.]", "").cast("double"), F.lit(0.0))),
+        ).alias("extracted_total_amount"),
         F.col("fields.currency").alias("extracted_currency"),
         F.col("fields.bank_account_number").alias("extracted_bank_account"),
         F.col("fields.ifsc_code").alias("extracted_ifsc"),

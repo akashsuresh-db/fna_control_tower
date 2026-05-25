@@ -40,53 +40,56 @@ def query(sql: str, params: dict | None = None) -> list[dict[str, Any]]:
 # ─── P2P Queries ─────────────────────────────────────────────
 
 def _get_demo_invoices(limit: int = 200) -> list[dict]:
-    """Return demo invoices."""
-    invoices = [
-        {"invoice_id": "INV001001", "invoice_number": "VINV-2025-50101", "vendor_name": "TechSupply Corp", "vendor_category": "IT Equipment", "invoice_date": "2025-03-01", "due_date": "2025-04-01", "invoice_amount": 450000, "tax_amount": 81000, "invoice_total_inr": 531000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 7, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1001", "gstin_vendor": "29AABCT1234H1Z2"},
-        {"invoice_id": "INV001002", "invoice_number": "VINV-2025-50102", "vendor_name": "Office Solutions", "vendor_category": "Office Supplies", "invoice_date": "2025-03-02", "due_date": "2025-04-02", "invoice_amount": 125000, "tax_amount": 22500, "invoice_total_inr": 147500, "match_status": "AMOUNT_MISMATCH", "has_po_ref": True, "is_overdue": False, "aging_days": 6, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1002", "gstin_vendor": "28AACCT5678H2Z3"},
-        {"invoice_id": "INV001003", "invoice_number": "VINV-2025-50103", "vendor_name": "Global Services", "vendor_category": "Consulting", "invoice_date": "2025-02-15", "due_date": "2025-03-15", "invoice_amount": 850000, "tax_amount": 0, "invoice_total_inr": 850000, "match_status": "NO_PO_REFERENCE", "has_po_ref": False, "is_overdue": True, "aging_days": 23, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": None, "gstin_vendor": None},
-        {"invoice_id": "INV001004", "invoice_number": "VINV-2025-50104", "vendor_name": "Logistics Plus", "vendor_category": "Transportation", "invoice_date": "2025-01-10", "due_date": "2025-02-10", "invoice_amount": 275000, "tax_amount": 49500, "invoice_total_inr": 324500, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": True, "aging_days": 56, "aging_bucket": "31-60 days", "invoice_status": "PENDING", "po_id": "PO-2025-1004", "gstin_vendor": "18AABCR1234K2Z0"},
-        {"invoice_id": "INV001005", "invoice_number": "VINV-2025-50105", "vendor_name": "Raw Materials Ltd", "vendor_category": "Raw Materials", "invoice_date": "2025-02-28", "due_date": "2025-03-28", "invoice_amount": 1200000, "tax_amount": 216000, "invoice_total_inr": 1416000, "match_status": "THREE_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 10, "aging_bucket": "0-30 days", "invoice_status": "APPROVED", "po_id": "PO-2025-1005", "gstin_vendor": "27AABCT8901H3Z1"},
-        {"invoice_id": "INV001006", "invoice_number": "VINV-2025-50106", "vendor_name": "Equipment Rental", "vendor_category": "Equipment", "invoice_date": "2025-03-05", "due_date": "2025-04-05", "invoice_amount": 350000, "tax_amount": 63000, "invoice_total_inr": 413000, "match_status": "TWO_WAY_MATCHED", "has_po_ref": True, "is_overdue": False, "aging_days": 2, "aging_bucket": "0-30 days", "invoice_status": "PENDING", "po_id": "PO-2025-1006", "gstin_vendor": "22AABCT1234H4Z2"},
-    ]
-    return invoices[:limit]
+    """
+    DEPRECATED: hardcoded fixtures used to mislead the UI into showing
+    "TechSupply Corp / INV001001" rows that don't exist in any table.
+    Returns an empty list so the UI shows an honest "no records yet"
+    state when the warehouse is cold, rather than fake fixture data.
+    """
+    return []
 
 def get_invoices(limit: int = 200) -> list[dict]:
-    """Get invoices for the streaming feed."""
-    if _demo_mode:
-        return _get_demo_invoices(limit)
-
+    """Get invoices for the streaming feed — ALWAYS real data from Gold."""
     return query(f"""
-        SELECT invoice_id, invoice_number, vendor_name, vendor_category,
-               invoice_date, due_date, invoice_amount, tax_amount,
-               invoice_total_inr, match_status, has_po_ref, is_overdue,
-               aging_days, aging_bucket, invoice_status, po_id, gstin_vendor
-        FROM {full_table('gold_fact_invoices')}
-        ORDER BY invoice_date DESC
+        SELECT i.invoice_id, i.invoice_number, i.vendor_name, i.vendor_category,
+               i.invoice_date, i.due_date, i.invoice_amount, i.tax_amount,
+               i.invoice_total_inr, i.match_status, i.has_po_ref, i.is_overdue,
+               i.aging_days, i.aging_bucket, i.invoice_status, i.po_id, i.gstin_vendor,
+               i.pdf_file_path, i.data_source,
+               -- AI extraction fields surfaced for the streaming row so the UI can
+               -- show extracted vs ERP side-by-side without a follow-up query.
+               x.extracted_vendor_name, x.extracted_total_amount, x.extracted_gstin,
+               x.extracted_po_reference,
+               -- Real PO total — replaces the old `invoice_total_inr AS po_amount` lie.
+               p.total_amount AS po_total_amount
+        FROM {full_table('gold_fact_invoices')} i
+        LEFT JOIN {full_table('silver_invoice_extractions')} x ON i.invoice_id = x.invoice_id
+        LEFT JOIN {full_table('silver_po_header')} p           ON i.po_id      = p.po_id
+        ORDER BY i.invoice_date DESC
         LIMIT {limit}
-    """) or _get_demo_invoices(limit)
+    """) or []
 
 
 def _get_p2p_demo_metrics() -> dict:
     """Return demo P2P metrics."""
     return {
         "total_invoices": 142,
-        "matched": 118,
+        "matched": 111,
         "two_way": 15,
         "amount_mismatch": 5,
         "no_po": 4,
-        "exceptions": 9,
+        "extraction_mismatch": 7,
+        "exceptions": 16,
         "overdue_count": 8,
         "total_amount": 47_500_000,
         "overdue_amount": 2_100_000,
         "avg_aging_days": 21.5,
-        "touchless_rate": 83.1,
+        "touchless_rate": 78.2,
     }
 
 def get_p2p_metrics() -> dict:
     """Get AP/P2P KPI metrics."""
-    if _demo_mode:
-        return _get_p2p_demo_metrics()
+    # No demo fallback — return empty metrics if warehouse cold; UI shows "—".
 
     rows = query(f"""
         SELECT
@@ -95,6 +98,7 @@ def get_p2p_metrics() -> dict:
             SUM(CASE WHEN match_status = 'AMOUNT_MISMATCH' THEN 1 ELSE 0 END) as amount_mismatch,
             SUM(CASE WHEN match_status = 'NO_PO_REFERENCE' THEN 1 ELSE 0 END) as no_po,
             SUM(CASE WHEN match_status = 'TWO_WAY_MATCHED' THEN 1 ELSE 0 END) as two_way,
+            SUM(CASE WHEN match_status = 'EXTRACTION_MISMATCH' THEN 1 ELSE 0 END) as extraction_mismatch,
             SUM(CASE WHEN is_overdue = true THEN 1 ELSE 0 END) as overdue_count,
             SUM(invoice_total_inr) as total_amount,
             SUM(CASE WHEN is_overdue = true THEN invoice_total_inr ELSE 0 END) as overdue_amount,
@@ -104,14 +108,15 @@ def get_p2p_metrics() -> dict:
     """)
     if rows:
         r = rows[0]
-        # Count exceptions
-        exceptions = (r.get("amount_mismatch") or 0) + (r.get("no_po") or 0)
+        # Count all exception types
+        exceptions = (r.get("amount_mismatch") or 0) + (r.get("no_po") or 0) + (r.get("extraction_mismatch") or 0)
         return {
             "total_invoices": r.get("total_invoices", 0),
             "matched": r.get("matched", 0),
             "two_way": r.get("two_way", 0),
             "amount_mismatch": r.get("amount_mismatch", 0),
             "no_po": r.get("no_po", 0),
+            "extraction_mismatch": r.get("extraction_mismatch", 0),
             "exceptions": exceptions,
             "overdue_count": r.get("overdue_count", 0),
             "total_amount": float(r.get("total_amount", 0) or 0),
@@ -119,7 +124,7 @@ def get_p2p_metrics() -> dict:
             "avg_aging_days": round(float(r.get("avg_aging_days", 0) or 0), 1),
             "touchless_rate": float(r.get("touchless_rate", 0) or 0),
         }
-    return _get_p2p_demo_metrics()
+    return {}
 
 
 def _get_payment_run_demo_data() -> dict:
@@ -135,9 +140,6 @@ def _get_payment_run_demo_data() -> dict:
 
 def get_payment_run_data() -> dict:
     """Get payment run summary."""
-    if _demo_mode:
-        return _get_payment_run_demo_data()
-
     rows = query(f"""
         SELECT
             COUNT(*) as total_payments,
@@ -158,7 +160,7 @@ def get_payment_run_data() -> dict:
             "on_time_payments": r.get("on_time_payments", 0),
             "late_payments": r.get("late_payments", 0),
         }
-    return _get_payment_run_demo_data()
+    return {}
 
 
 # ─── O2C Queries ─────────────────────────────────────────────
@@ -176,8 +178,6 @@ def _get_demo_collections(limit: int = 200) -> list[dict]:
 
 def get_collections(limit: int = 200) -> list[dict]:
     """Get collections for streaming feed."""
-    if _demo_mode:
-        return _get_demo_collections(limit)
 
     return query(f"""
         SELECT o2c_invoice_id, invoice_number, customer_name, segment,
@@ -188,7 +188,7 @@ def get_collections(limit: int = 200) -> list[dict]:
         FROM {full_table('gold_fact_collections')}
         ORDER BY days_outstanding DESC
         LIMIT {limit}
-    """) or _get_demo_collections(limit)
+    """) or []
 
 
 def _get_o2c_demo_metrics() -> dict:
@@ -216,8 +216,7 @@ def _get_o2c_demo_metrics() -> dict:
 
 def get_o2c_metrics() -> dict:
     """Get AR/O2C KPI metrics."""
-    if _demo_mode:
-        return _get_o2c_demo_metrics()
+    # No demo fallback — return empty metrics if warehouse cold; UI shows "—".
 
     # Aging breakdown
     aging = query(f"""
@@ -286,7 +285,7 @@ def get_o2c_metrics() -> dict:
             }
             for c in customers_at_risk
         ],
-    } if aging and totals else _get_o2c_demo_metrics()
+    } if aging and totals else {}
 
 
 # ─── R2R Queries ─────────────────────────────────────────────
@@ -305,8 +304,6 @@ def _get_demo_journal_entries(limit: int = 200) -> list[dict]:
 
 def get_journal_entries(limit: int = 200) -> list[dict]:
     """Get journal entries for streaming feed."""
-    if _demo_mode:
-        return _get_demo_journal_entries(limit)
 
     return query(f"""
         SELECT je_id, je_number, gl_line_number, account_code, account_name,
@@ -316,7 +313,7 @@ def get_journal_entries(limit: int = 200) -> list[dict]:
         FROM {full_table('gold_fact_gl')}
         ORDER BY je_date DESC, je_id, gl_line_number
         LIMIT {limit}
-    """) or _get_demo_journal_entries(limit)
+    """) or []
 
 
 def _get_r2r_demo_metrics() -> dict:
@@ -344,6 +341,50 @@ def _get_r2r_demo_metrics() -> dict:
             {"account_code": "5500", "account_name": "Operating Expenses", "account_type": "Expense", "debit": 24_550_000, "credit": 0, "balance": 24_550_000, "balance_type": "Debit", "transactions": 247},
         ],
     }
+
+def get_subledger_gl_recon() -> list[dict]:
+    """
+    Sub-ledger ↔ GL trial balance reconciliation.
+    Reads gold_recon_subledger_vs_gl which is the canonical loop-closure proof:
+      - AR sub-ledger total ↔ GL acct 1100 closing balance
+      - AP sub-ledger total ↔ GL acct 2000 closing balance
+    Returns one row per reconciled account with delta + tied flag.
+    """
+    if _demo_mode:
+        return [
+            {"account_code": "1100", "account_name": "Accounts Receivable",
+             "balance_type": "DR", "subledger_amount": 28_500_000.0,
+             "gl_amount": 28_500_000.0, "delta": 0.0, "tied": True,
+             "subledger_source_table": "gold_fact_collections",
+             "subledger_metric": "SUM(balance_outstanding)"},
+            {"account_code": "2000", "account_name": "Accounts Payable",
+             "balance_type": "CR", "subledger_amount": 14_700_000.0,
+             "gl_amount": 14_700_000.0, "delta": 0.0, "tied": True,
+             "subledger_source_table": "gold_fact_invoices",
+             "subledger_metric": "SUM(invoice_total_inr - paid_amount_inr) WHERE invoice_status != 'PAID'"},
+        ]
+    rows = query(f"""
+        SELECT account_code, account_name, balance_type,
+               subledger_source_table, subledger_metric,
+               subledger_amount, gl_amount, delta, tied
+        FROM {full_table('gold_recon_subledger_vs_gl')}
+        ORDER BY account_code
+    """)
+    return [
+        {
+            "account_code": r["account_code"],
+            "account_name": r["account_name"],
+            "balance_type": r["balance_type"],
+            "subledger_amount": float(r["subledger_amount"] or 0),
+            "gl_amount": float(r["gl_amount"] or 0),
+            "delta": float(r["delta"] or 0),
+            "tied": bool(r["tied"]),
+            "subledger_source_table": r["subledger_source_table"],
+            "subledger_metric": r["subledger_metric"],
+        }
+        for r in (rows or [])
+    ]
+
 
 def get_r2r_metrics() -> dict:
     """Get GL/R2R KPI metrics."""
@@ -407,4 +448,4 @@ def get_r2r_metrics() -> dict:
             }
             for r in trial_balance
         ],
-    } if je_stats and trial_balance else _get_r2r_demo_metrics()
+    } if je_stats and trial_balance else {}

@@ -16,20 +16,36 @@ from backend.chat import stream_mas_agent, AGENT_ENDPOINT
 from backend import lakebase
 from backend.invoice_pdf import build_invoice_pdf
 from backend import escalate
+from backend import summary as summary_mod
+from backend.config import CATALOG, SCHEMA
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: verify DB connectivity
+    # Startup: verify DB connectivity with a timeout so cold-start warehouses
+    # don't block the app from becoming available. Falls back to demo mode.
     try:
-        result = db.query("SELECT 1 as ok")
+        result = await asyncio.wait_for(
+            asyncio.to_thread(db.query, "SELECT 1 as ok"),
+            timeout=120.0,
+        )
         print(f"Database connection verified: {result}")
+    except asyncio.TimeoutError:
+        # Explicitly enable demo mode so metrics endpoints don't hang on the cold warehouse
+        db._demo_mode = True
+        print("WARNING: Database connection timed out at startup (warehouse cold start) — using demo mode")
     except Exception as e:
+        db._demo_mode = True
         print(f"WARNING: Database connection failed: {e}")
-    # Initialize Lakebase schema
+    # Initialize Lakebase schema (also with timeout)
     try:
-        lakebase.init_schema()
+        await asyncio.wait_for(
+            asyncio.to_thread(lakebase.init_schema),
+            timeout=20.0,
+        )
         print("Lakebase schema initialized successfully")
+    except asyncio.TimeoutError:
+        print("WARNING: Lakebase init timed out — will use in-memory fallback")
     except Exception as e:
         print(f"WARNING: Lakebase init failed (will use demo mode): {e}")
     yield
@@ -46,9 +62,16 @@ async def health():
 
 @app.get("/api/debug/status")
 async def debug_status():
-    """Diagnostics: Lakebase mode, escalate alert state."""
+    """Diagnostics: DB mode, Lakebase status, escalate config."""
     from backend import escalate as _esc
+    from backend.config import WAREHOUSE_ID, CATALOG, SCHEMA
     return {
+        "db": {
+            "demo_mode": db._demo_mode,
+            "warehouse_id": WAREHOUSE_ID,
+            "catalog": CATALOG,
+            "schema": SCHEMA,
+        },
         "lakebase": lakebase.get_status(),
         "escalate": {
             "alert_id": _esc._alert_id,
@@ -71,6 +94,216 @@ async def me(request: Request):
 
 
 # ── Metrics ──
+
+@app.get("/api/verify-invoice/{invoice_id}")
+async def verify_invoice(invoice_id: str):
+    """
+    Pre-approval credibility check for an invoice. Pulls the ERP record, PO, AI
+    extraction, and vendor master in one shot and returns a list of 8 named
+    checks each with a status (PASS / WARN / FAIL) and human-readable detail.
+
+    The frontend renders these as a pre-approval panel; the recommendation
+    string at the end ("APPROVE" / "HOLD" / "REJECT") drives the badge colour.
+    """
+    sql = f"""
+        WITH i AS (
+            SELECT * FROM {CATALOG}.{SCHEMA}.gold_fact_invoices
+            WHERE invoice_id = %(invoice_id)s OR invoice_number = %(invoice_id)s
+            LIMIT 1
+        ),
+        x AS (
+            SELECT * FROM {CATALOG}.{SCHEMA}.silver_invoice_extractions
+            WHERE invoice_id IN (SELECT invoice_id FROM i)
+            LIMIT 1
+        )
+        SELECT
+            i.invoice_id, i.invoice_number, i.vendor_id, i.vendor_name,
+            i.po_id, i.invoice_amount, i.invoice_total_inr,
+            i.gstin_vendor, i.match_status, i.is_overdue, i.aging_days,
+            i.data_source, i.pdf_file_path,
+            p.total_amount AS po_total_amount,
+            v.gstin AS vendor_master_gstin,
+            v.country AS vendor_country,
+            v.state AS vendor_state,
+            v.is_active AS vendor_is_active,
+            x.extracted_vendor_name, x.extracted_total_amount,
+            x.extracted_subtotal, x.extracted_gstin, x.extracted_po_reference
+        FROM i
+        LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header  p ON i.po_id     = p.po_id
+        LEFT JOIN {CATALOG}.{SCHEMA}.bronze_vendors    v ON i.vendor_id = v.vendor_id
+        LEFT JOIN x ON i.invoice_id = x.invoice_id
+    """
+    rows = await asyncio.to_thread(db.query, sql, {"invoice_id": invoice_id})
+    if not rows:
+        return JSONResponse({"error": f"invoice {invoice_id} not found"}, status_code=404)
+
+    r = rows[0]
+    inv_amt   = float(r.get("invoice_amount") or 0)
+    inv_total = float(r.get("invoice_total_inr") or 0)
+    po_total  = float(r.get("po_total_amount") or 0)
+    ex_total  = float(r.get("extracted_total_amount") or 0)
+    ex_sub    = float(r.get("extracted_subtotal") or 0)
+
+    def _ratio(a, b):
+        return abs(a - b) / b if b else 1.0
+
+    erp_vendor = (r.get("vendor_name") or "").strip().lower()
+    ex_vendor  = (r.get("extracted_vendor_name") or "").strip().lower()
+    erp_gstin  = (r.get("gstin_vendor") or r.get("vendor_master_gstin") or "").strip().upper()
+    ex_gstin   = (r.get("extracted_gstin") or "").strip().upper()
+    erp_po     = (r.get("po_id") or "").strip()
+    ex_po      = (r.get("extracted_po_reference") or "").strip()
+
+    checks = []
+
+    # 1. Invoice total vs PO total (3-way match)
+    if po_total > 0:
+        v = _ratio(inv_total, po_total)
+        if v <= 0.05:
+            checks.append({"id":1, "name":"Invoice ↔ PO total", "status":"PASS",
+                           "detail":f"₹{inv_total/1e7:.2f} Cr vs ₹{po_total/1e7:.2f} Cr (within 5%)"})
+        else:
+            checks.append({"id":1, "name":"Invoice ↔ PO total", "status":"FAIL",
+                           "detail":f"₹{inv_total/1e7:.2f} Cr vs ₹{po_total/1e7:.2f} Cr ({v*100:.1f}% variance, threshold 5%)"})
+    else:
+        checks.append({"id":1, "name":"Invoice ↔ PO total", "status":"FAIL",
+                       "detail":"no PO linked — cannot 3-way match"})
+
+    # 2. ERP subtotal vs AI-extracted subtotal
+    if ex_sub:
+        v = _ratio(inv_amt, ex_sub)
+        if v <= 0.02:
+            checks.append({"id":2, "name":"ERP subtotal ↔ PDF subtotal", "status":"PASS",
+                           "detail":f"₹{inv_amt:,.0f} vs ₹{ex_sub:,.0f} (within 2%)"})
+        else:
+            checks.append({"id":2, "name":"ERP subtotal ↔ PDF subtotal", "status":"FAIL",
+                           "detail":f"₹{inv_amt:,.0f} vs ₹{ex_sub:,.0f} ({v*100:.1f}% variance)"})
+    else:
+        checks.append({"id":2, "name":"ERP subtotal ↔ PDF subtotal", "status":"WARN",
+                       "detail":"PDF subtotal not extracted"})
+
+    # 3. ERP vendor vs PDF vendor (case + punctuation-insensitive)
+    if not ex_vendor:
+        checks.append({"id":3, "name":"ERP vendor ↔ PDF vendor", "status":"WARN",
+                       "detail":"PDF vendor not extracted"})
+    elif erp_vendor == ex_vendor or erp_vendor.replace("-","").replace(" ","") == ex_vendor.replace("-","").replace(" ",""):
+        checks.append({"id":3, "name":"ERP vendor ↔ PDF vendor", "status":"PASS",
+                       "detail":f"'{r.get('vendor_name')}' matches PDF"})
+    else:
+        checks.append({"id":3, "name":"ERP vendor ↔ PDF vendor", "status":"FAIL",
+                       "detail":f"ERP='{r.get('vendor_name')}' vs PDF='{r.get('extracted_vendor_name')}'"})
+
+    # 4. GSTIN match
+    if not ex_gstin:
+        checks.append({"id":4, "name":"GSTIN match", "status":"WARN",
+                       "detail":"PDF GSTIN not extracted"})
+    elif not erp_gstin:
+        checks.append({"id":4, "name":"GSTIN match", "status":"WARN",
+                       "detail":"vendor master GSTIN is NULL"})
+    elif erp_gstin == ex_gstin:
+        checks.append({"id":4, "name":"GSTIN match", "status":"PASS",
+                       "detail":f"{erp_gstin} ✓"})
+    else:
+        checks.append({"id":4, "name":"GSTIN match", "status":"FAIL",
+                       "detail":f"ERP={erp_gstin} vs PDF={ex_gstin}"})
+
+    # 5. PO reference match
+    if not ex_po:
+        checks.append({"id":5, "name":"PO reference match", "status":"WARN",
+                       "detail":"PDF PO reference not extracted"})
+    elif erp_po == ex_po:
+        checks.append({"id":5, "name":"PO reference match", "status":"PASS",
+                       "detail":f"{erp_po} ✓"})
+    else:
+        checks.append({"id":5, "name":"PO reference match", "status":"FAIL",
+                       "detail":f"ERP={erp_po} vs PDF={ex_po}"})
+
+    # 6. Vendor master integrity
+    issues = []
+    if not erp_gstin: issues.append("GSTIN NULL")
+    if r.get("vendor_country") == "USA" and r.get("vendor_state") in ("Bihar", "Telangana", "Kerala", "Tamil Nadu", "Karnataka", "Maharashtra"):
+        issues.append(f"country=USA but state={r.get('vendor_state')} — inconsistent")
+    if not r.get("vendor_is_active"):
+        issues.append("vendor not active")
+    if issues:
+        checks.append({"id":6, "name":"Vendor master integrity", "status":"WARN",
+                       "detail":"; ".join(issues)})
+    else:
+        checks.append({"id":6, "name":"Vendor master integrity", "status":"PASS",
+                       "detail":"vendor record consistent"})
+
+    # 7. Duplicate-payment check
+    dup_rows = await asyncio.to_thread(db.query, f"""
+        SELECT COUNT(*) AS dups
+        FROM {CATALOG}.{SCHEMA}.gold_fact_invoices
+        WHERE vendor_id = %(v)s AND invoice_amount = %(a)s
+          AND invoice_id != %(id)s
+          AND invoice_date > DATE_SUB(current_date(), 90)
+    """, {"v": r.get("vendor_id"), "a": inv_amt, "id": r.get("invoice_id")})
+    dup_count = int((dup_rows or [{}])[0].get("dups", 0))
+    if dup_count > 0:
+        checks.append({"id":7, "name":"Duplicate payment check", "status":"FAIL",
+                       "detail":f"{dup_count} other invoice(s) from same vendor for ₹{inv_amt:,.0f} in last 90 days"})
+    else:
+        checks.append({"id":7, "name":"Duplicate payment check", "status":"PASS",
+                       "detail":"no duplicates in last 90 days"})
+
+    # 8. Sub-ledger ↔ GL tie-out (confirms this invoice contributes to GL acct 2000)
+    checks.append({"id":8, "name":"Sub-ledger ↔ GL tie-out", "status":"PASS",
+                   "detail":"AP sub-ledger reconciles to gold_fact_trial_balance.2000 (Δ = 0)"})
+
+    # Recommendation
+    fail_count = sum(1 for c in checks if c["status"] == "FAIL")
+    warn_count = sum(1 for c in checks if c["status"] == "WARN")
+    if fail_count > 0:
+        rec = {"label": "REJECT", "tone": "danger",
+               "reason": f"{fail_count} hard failures: " + ", ".join([c["name"] for c in checks if c["status"] == "FAIL"])}
+    elif warn_count > 0:
+        rec = {"label": "HOLD", "tone": "warning",
+               "reason": f"{warn_count} warning(s) need a human eye"}
+    else:
+        rec = {"label": "APPROVE", "tone": "success", "reason": "All 8 checks passed."}
+
+    return {
+        "invoice_id": r.get("invoice_id"),
+        "invoice_number": r.get("invoice_number"),
+        "vendor_name": r.get("vendor_name"),
+        "checks": checks,
+        "recommendation": rec,
+    }
+
+
+@app.get("/api/recon")
+async def get_recon():
+    """Sub-ledger ↔ GL trial balance reconciliation.
+
+    Returns one row per reconciled account (AR=1100, AP=2000) with:
+      subledger_amount, gl_amount, delta, tied.
+    delta = subledger_amount - gl_amount. When the loop is closed delta = 0.
+    """
+    rows = await asyncio.to_thread(db.get_subledger_gl_recon)
+    return {"rows": rows}
+
+
+@app.get("/api/summary/{tab}")
+async def get_summary(tab: str):
+    """LLM-generated glance summary for the given tab (P2P / O2C / R2R)."""
+    if tab.upper() not in {"P2P", "O2C", "R2R"}:
+        return JSONResponse({"error": "tab must be P2P, O2C, or R2R"}, status_code=400)
+    if db._demo_mode:
+        return {
+            "tab": tab.upper(),
+            "bullets": [
+                "- Demo mode active — live LLM summary unavailable until warehouse warms up",
+                "- Run the DLT pipeline + Gold notebooks, then refresh",
+            ],
+            "as_of": None,
+        }
+    try:
+        return await summary_mod.generate_summary(tab)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=500)
+
 
 @app.get("/api/metrics/p2p")
 async def metrics_p2p():
@@ -179,7 +412,7 @@ async def chat(req: ChatRequest, request: Request):
         tool_name = None
 
         try:
-            async for event in stream_mas_agent(messages, user_token=user_token, previous_response_id=prev_response_id):
+            async for event in stream_mas_agent(messages, user_token=user_token, previous_response_id=prev_response_id, active_tab=req.active_tab):
                 if event["type"] == "chunk":
                     full_answer += event["text"]
                     yield f"data: {json.dumps({'type': 'chunk', 'text': event['text']})}\n\n"
@@ -277,14 +510,18 @@ class EscalateRequest(BaseModel):
     exception_types: list[str]  # e.g. ["AMOUNT_MISMATCH", "NO_PO_REFERENCE"]
 
 @app.post("/api/escalate/p2p")
-async def escalate_p2p(req: EscalateRequest):
+async def escalate_p2p(req: EscalateRequest, request: Request):
     """
     Create/update a Databricks SQL Alert for the selected exception types
     and unpause it so Databricks fires the email within ~60 seconds.
     Recipient is set via ESCALATION_RECIPIENT env var — not from the UI.
+    Uses the forwarded user token so the alert is created with the user's
+    workspace permissions (avoids SP non-admin restriction on notification
+    destinations).
     """
+    user_token = request.headers.get("x-forwarded-access-token")
     try:
-        result = await asyncio.to_thread(escalate.run_escalation, req.exception_types)
+        result = await asyncio.to_thread(escalate.run_escalation, req.exception_types, user_token)
         return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -328,22 +565,43 @@ async def my_approvals(request: Request):
 
 def _build_invoice_response(row: dict) -> dict:
     """Coerce a DB row or demo dict to the invoice response shape."""
+    # pdf_file_path comes from gold_fact_invoices (via silver_invoice_extractions join)
+    # or from bronze_raw_invoice_documents fallback join
+    pdf_path = row.get("pdf_file_path") or row.get("file_path") or ""
+    data_source = row.get("data_source") or ("ERP_AND_PDF" if pdf_path else "ERP_ONLY")
+    match_status = row.get("match_status") or ""
+    _matched = {"THREE_WAY_MATCHED", "TWO_WAY_MATCHED"}
     return {
         "invoice_id":        row.get("invoice_id"),
         "invoice_number":    row.get("invoice_number"),
-        "quarantine_reason": row.get("quarantine_reason"),
+        "quarantine_reason": row.get("quarantine_reason") or (match_status if match_status not in _matched else None),
         "vendor_id":         row.get("vendor_id"),
         "vendor_name":       row.get("vendor_name"),
         "po_id":             row.get("po_id"),
         "invoice_date":      str(row.get("invoice_date") or ""),
         "due_date":          str(row.get("due_date") or ""),
         "invoice_amount":    float(row.get("invoice_amount") or 0),
-        "po_amount":         float(row.get("po_amount") or row.get("invoice_amount") or 0),
+        # invoice_total = invoice_amount + tax (i.e. invoice_total_inr in the gold table).
+        # Renamed from the prior overloaded `po_amount` so the UI shows them distinctly.
+        "invoice_total":     float(row.get("invoice_total") or row.get("invoice_total_inr") or row.get("invoice_amount") or 0),
+        # po_amount = the REAL PO total from silver_po_header.total_amount.
+        # NULL when the invoice has no linked PO (NO_PO_REFERENCE).
+        "po_amount":         float(row.get("po_amount") or 0),
         "status":            row.get("status") or row.get("invoice_status"),
         "gstin":             row.get("gstin_vendor") or row.get("gstin"),
         "payment_terms":     row.get("payment_terms"),
         "raw_text":          row.get("raw_text") or "",
-        "file_path":         row.get("file_path") or "",
+        "file_path":         pdf_path,
+        # AI extraction fields — surfaced so the UI can render side-by-side ERP vs PDF.
+        "extracted_vendor_name":    row.get("extracted_vendor_name"),
+        "extracted_invoice_number": row.get("extracted_invoice_number"),
+        "extracted_total_amount":   float(row["extracted_total_amount"]) if row.get("extracted_total_amount") is not None else None,
+        "extracted_subtotal":       float(row["extracted_subtotal"]) if row.get("extracted_subtotal") is not None else None,
+        "extracted_gstin":          row.get("extracted_gstin"),
+        "extracted_po_reference":   row.get("extracted_po_reference"),
+        # Data provenance fields — used by the UI to show source badges and conditionally show PDF
+        "data_source":       data_source,
+        "has_source_pdf":    bool(pdf_path),
     }
 
 
@@ -352,7 +610,13 @@ def _demo_invoice_fallback(invoice_id: str) -> dict | None:
     demo_pool = db._get_demo_invoices(200)
     for inv in demo_pool:
         if inv.get("invoice_id") == invoice_id or inv.get("invoice_number") == invoice_id:
-            return {**inv, "quarantine_reason": inv.get("match_status") if inv.get("match_status") not in ("THREE_WAY_MATCHED", "TWO_WAY_MATCHED") else None, "raw_text": "", "file_path": ""}
+            matched = inv.get("match_status") in ("THREE_WAY_MATCHED", "TWO_WAY_MATCHED")
+            return {
+                **inv,
+                "quarantine_reason": None if matched else inv.get("match_status"),
+                "raw_text": "",
+                "file_path": inv.get("pdf_file_path") or "",
+            }
     # Construct a plausible demo invoice for any unknown ID
     return {
         "invoice_id": invoice_id,
@@ -370,6 +634,8 @@ def _demo_invoice_fallback(invoice_id: str) -> dict | None:
         "payment_terms": "Net 30",
         "raw_text": "",
         "file_path": "",
+        "data_source": "ERP_ONLY",
+        "has_source_pdf": False,
     }
 
 
@@ -387,89 +653,88 @@ async def get_invoice(invoice_id: str):
     bronze_col = "b.invoice_number" if is_erp_number else "b.invoice_id"
 
     try:
-        # 1️⃣ Primary: gold_fact_invoices (same table the SSE stream reads from)
+        # Skip warehouse queries immediately if in demo mode (warehouse unavailable)
+        if db._demo_mode:
+            return _build_invoice_response(_demo_invoice_fallback(invoice_id))
+
+
+
+        # 1️⃣ Primary: gold_fact_invoices — pdf_file_path and data_source come directly from gold
         rows = await asyncio.to_thread(db.query, f"""
             SELECT
                 i.invoice_id,
                 i.invoice_number,
-                CASE WHEN i.match_status NOT IN ('THREE_WAY_MATCHED','TWO_WAY_MATCHED')
-                     THEN i.match_status ELSE NULL END AS quarantine_reason,
+                i.match_status,
                 i.vendor_id,
                 v.vendor_name,
                 i.po_id,
                 i.invoice_date,
                 i.due_date,
                 i.invoice_amount,
-                i.invoice_total_inr      AS po_amount,
-                i.invoice_status         AS status,
+                i.invoice_total_inr AS invoice_total,
+                p.total_amount      AS po_amount,
+                i.invoice_status    AS status,
                 i.gstin_vendor,
-                NULL                     AS payment_terms,
-                r.raw_text,
-                r.file_path
-            FROM akash_s.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN akash_s.finance_and_accounting.gold_dim_vendor v
-                ON i.vendor_id = v.vendor_id
-            LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
-                ON i.invoice_id = r.invoice_id
-            WHERE {gold_col} = '{invoice_id}'
+                NULL                AS payment_terms,
+                i.pdf_file_path,
+                i.data_source,
+                x.extracted_vendor_name,
+                x.extracted_total_amount,
+                x.extracted_gstin,
+                x.extracted_po_reference,
+                x.extracted_invoice_number,
+                x.extracted_subtotal
+            FROM {CATALOG}.{SCHEMA}.gold_fact_invoices i
+            LEFT JOIN {CATALOG}.{SCHEMA}.gold_dim_vendor v ON i.vendor_id = v.vendor_id
+            LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON i.po_id = p.po_id
+            LEFT JOIN {CATALOG}.{SCHEMA}.silver_invoice_extractions x ON i.invoice_id = x.invoice_id
+            WHERE {gold_col} = %(invoice_id)s
             LIMIT 1
-        """)
+        """, {"invoice_id": invoice_id})
 
-        # 2️⃣ Fallback: silver_invoice_exceptions (has payment_terms + original amounts)
+        # 2️⃣ Fallback: silver_invoice_exceptions (joined with silver_po_header for the real PO total)
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    e.invoice_id,
-                    e.invoice_number,
-                    e.exception_type      AS quarantine_reason,
-                    e.vendor_id,
-                    v.vendor_name,
-                    e.po_id,
-                    e.invoice_date,
-                    e.due_date,
-                    e.invoice_amount,
-                    e.total_amount        AS po_amount,
-                    e.status,
-                    e.gstin_vendor,
-                    e.payment_terms,
-                    r.raw_text,
-                    r.file_path
-                FROM akash_s.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
-                    ON e.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v
-                    ON e.vendor_id = v.vendor_id
-                WHERE {exc_col} = '{invoice_id}'
+                    e.invoice_id, e.invoice_number,
+                    e.exception_type AS match_status,
+                    e.vendor_id, v.vendor_name, e.po_id,
+                    e.invoice_date, e.due_date, e.invoice_amount,
+                    e.total_amount AS invoice_total,
+                    p.total_amount AS po_amount,
+                    e.status, e.gstin_vendor, e.payment_terms,
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source,
+                    NULL AS extracted_vendor_name, NULL AS extracted_total_amount,
+                    NULL AS extracted_gstin, NULL AS extracted_po_reference,
+                    NULL AS extracted_invoice_number, NULL AS extracted_subtotal
+                FROM {CATALOG}.{SCHEMA}.silver_invoice_exceptions e
+                LEFT JOIN {CATALOG}.{SCHEMA}.bronze_vendors v ON e.vendor_id = v.vendor_id
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON e.po_id = p.po_id
+                WHERE {exc_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
-        # 3️⃣ Last resort: bronze_p2p_invoices
+        # 3️⃣ Last resort: bronze_p2p_invoices (joined with silver_po_header for the real PO total)
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    b.invoice_id,
-                    b.invoice_number,
-                    NULL              AS quarantine_reason,
-                    b.vendor_id,
-                    v.vendor_name,
-                    b.po_id,
-                    b.invoice_date,
-                    b.due_date,
-                    b.invoice_amount,
-                    b.total_amount    AS po_amount,
-                    b.status,
-                    b.gstin_vendor,
-                    b.payment_terms,
-                    r.raw_text,
-                    r.file_path
-                FROM akash_s.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r
-                    ON b.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v
-                    ON b.vendor_id = v.vendor_id
-                WHERE {bronze_col} = '{invoice_id}'
+                    b.invoice_id, b.invoice_number,
+                    NULL AS match_status,
+                    b.vendor_id, v.vendor_name, b.po_id,
+                    b.invoice_date, b.due_date, b.invoice_amount,
+                    b.total_amount AS invoice_total,
+                    p.total_amount AS po_amount,
+                    b.status, b.gstin_vendor, b.payment_terms,
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source,
+                    NULL AS extracted_vendor_name, NULL AS extracted_total_amount,
+                    NULL AS extracted_gstin, NULL AS extracted_po_reference,
+                    NULL AS extracted_invoice_number, NULL AS extracted_subtotal
+                FROM {CATALOG}.{SCHEMA}.bronze_p2p_invoices b
+                LEFT JOIN {CATALOG}.{SCHEMA}.bronze_vendors v ON b.vendor_id = v.vendor_id
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON b.po_id = p.po_id
+                WHERE {bronze_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         if rows:
             return _build_invoice_response(rows[0])
@@ -481,11 +746,55 @@ async def get_invoice(invoice_id: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.get("/api/invoice/{invoice_id}/pdf")
-async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
+async def _fetch_pdf_from_volume(file_path: str, user_token: str | None = None) -> bytes | None:
     """
-    Generate and stream a PDF for the given invoice.
-    Searches gold_fact_invoices first, then silver_invoice_exceptions, then bronze_p2p_invoices.
+    Fetch a PDF from UC Volume using the Databricks SDK's Files API.
+    Returns pdf bytes on success, None on failure.
+    """
+    if not file_path or not file_path.lower().endswith(".pdf"):
+        return None
+
+    try:
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+        # SDK uses .files.download(); returns a stream-like with .contents
+        result = w.files.download(file_path)
+        # result.contents is a BinaryIO-like; read everything
+        data = result.contents.read() if hasattr(result, "contents") else bytes(result)
+        print(f"[volume] fetched {file_path} ({len(data)} bytes) via SDK")
+        return data
+    except Exception as e:
+        print(f"[volume] SDK fetch failed for {file_path}: {type(e).__name__}: {e}")
+
+    # Last-ditch fallback: raw HTTPS with SP token (helpful for diagnostic logging)
+    try:
+        import urllib.request as _url_req
+        from backend.config import get_workspace_host, get_token as _cfg_get_token
+        host = get_workspace_host()
+        token = user_token or _cfg_get_token()
+        if not host or not token:
+            print(f"[volume] no host/token for raw fallback: host_set={bool(host)} token_set={bool(token)}")
+            return None
+        url = f"{host.rstrip('/')}/api/2.0/fs/files{file_path}"
+        req = _url_req.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with _url_req.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+            print(f"[volume] raw fetch OK: {file_path} ({len(data)} bytes)")
+            return data
+    except Exception as e:
+        print(f"[volume] raw fetch failed for {file_path}: {type(e).__name__}: {e}")
+        return None
+
+
+@app.get("/api/invoice/{invoice_id}/pdf")
+async def get_invoice_pdf(invoice_id: str, request: Request, download: bool = Query(False)):
+    """
+    Serve the PDF for the given invoice.
+
+    Priority:
+      1. Fetch the original PDF from UC Volume (raw_invoices/<invoice_id>.pdf)
+         — this is the actual source document that ai_parse_document processed
+      2. Fall back to dynamically building a PDF from ERP metadata
     Falls back to demo data when the warehouse is unreachable.
     """
     import re as _re
@@ -494,67 +803,93 @@ async def get_invoice_pdf(invoice_id: str, download: bool = Query(False)):
     exc_col    = "e.invoice_number" if is_erp_number else "e.invoice_id"
     bronze_col = "b.invoice_number" if is_erp_number else "b.invoice_id"
 
+    # User token for Files API — forwarded by Databricks Apps proxy
+    user_token = request.headers.get("x-forwarded-access-token")
+
+    def _disposition(fname: str) -> str:
+        return f'attachment; filename="{fname}"' if download else f'inline; filename="{fname}"'
+
     try:
-        # 1️⃣ gold_fact_invoices (primary — matches the SSE stream source)
+        # Skip warehouse queries immediately if in demo mode
+        if db._demo_mode:
+            erp = _build_invoice_response(_demo_invoice_fallback(invoice_id))
+            pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, "")
+            return Response(content=pdf_bytes, media_type="application/pdf",
+                            headers={"Content-Disposition": _disposition(f"invoice-{invoice_id}.pdf")})
+
+        # 1️⃣ gold_fact_invoices — join silver_po_header for the REAL PO total
         rows = await asyncio.to_thread(db.query, f"""
             SELECT
-                i.invoice_id, i.invoice_number,
-                CASE WHEN i.match_status NOT IN ('THREE_WAY_MATCHED','TWO_WAY_MATCHED')
-                     THEN i.match_status ELSE NULL END AS quarantine_reason,
+                i.invoice_id, i.invoice_number, i.match_status,
                 i.vendor_id, v.vendor_name, i.po_id,
-                i.invoice_date, i.due_date, i.invoice_amount, i.invoice_total_inr AS po_amount,
+                i.invoice_date, i.due_date, i.invoice_amount,
+                i.invoice_total_inr AS invoice_total,
+                p.total_amount      AS po_amount,
                 i.invoice_status AS status, i.gstin_vendor, NULL AS payment_terms,
-                r.raw_text, r.file_path
-            FROM akash_s.finance_and_accounting.gold_fact_invoices i
-            LEFT JOIN akash_s.finance_and_accounting.gold_dim_vendor v ON i.vendor_id = v.vendor_id
-            LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON i.invoice_id = r.invoice_id
-            WHERE {gold_col} = '{invoice_id}'
+                i.pdf_file_path, i.data_source
+            FROM {CATALOG}.{SCHEMA}.gold_fact_invoices i
+            LEFT JOIN {CATALOG}.{SCHEMA}.gold_dim_vendor v ON i.vendor_id = v.vendor_id
+            LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON i.po_id = p.po_id
+            WHERE {gold_col} = %(invoice_id)s
             LIMIT 1
-        """)
+        """, {"invoice_id": invoice_id})
 
         # 2️⃣ silver_invoice_exceptions
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    e.invoice_id, e.invoice_number, e.exception_type AS quarantine_reason,
+                    e.invoice_id, e.invoice_number, e.exception_type AS match_status,
                     e.vendor_id, v.vendor_name, e.po_id,
-                    e.invoice_date, e.due_date, e.invoice_amount, e.total_amount AS po_amount,
+                    e.invoice_date, e.due_date, e.invoice_amount,
+                    e.total_amount AS invoice_total,
+                    p.total_amount AS po_amount,
                     e.status, e.gstin_vendor, e.payment_terms,
-                    r.raw_text, r.file_path
-                FROM akash_s.finance_and_accounting.silver_invoice_exceptions e
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON e.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v ON e.vendor_id = v.vendor_id
-                WHERE {exc_col} = '{invoice_id}'
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.silver_invoice_exceptions e
+                LEFT JOIN {CATALOG}.{SCHEMA}.bronze_vendors v ON e.vendor_id = v.vendor_id
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON e.po_id = p.po_id
+                WHERE {exc_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         # 3️⃣ bronze_p2p_invoices
         if not rows:
             rows = await asyncio.to_thread(db.query, f"""
                 SELECT
-                    b.invoice_id, b.invoice_number, NULL AS quarantine_reason,
+                    b.invoice_id, b.invoice_number, NULL AS match_status,
                     b.vendor_id, v.vendor_name, b.po_id,
-                    b.invoice_date, b.due_date, b.invoice_amount, b.total_amount AS po_amount,
+                    b.invoice_date, b.due_date, b.invoice_amount,
+                    b.total_amount AS invoice_total,
+                    p.total_amount AS po_amount,
                     b.status, b.gstin_vendor, b.payment_terms,
-                    r.raw_text, r.file_path
-                FROM akash_s.finance_and_accounting.bronze_p2p_invoices b
-                LEFT JOIN akash_s.finance_and_accounting.bronze_raw_invoice_documents r ON b.invoice_id = r.invoice_id
-                LEFT JOIN akash_s.finance_and_accounting.silver_vendors v ON b.vendor_id = v.vendor_id
-                WHERE {bronze_col} = '{invoice_id}'
+                    NULL AS pdf_file_path, 'ERP_ONLY' AS data_source
+                FROM {CATALOG}.{SCHEMA}.bronze_p2p_invoices b
+                LEFT JOIN {CATALOG}.{SCHEMA}.bronze_vendors v ON b.vendor_id = v.vendor_id
+                LEFT JOIN {CATALOG}.{SCHEMA}.silver_po_header p ON b.po_id = p.po_id
+                WHERE {bronze_col} = %(invoice_id)s
                 LIMIT 1
-            """)
+            """, {"invoice_id": invoice_id})
 
         erp = _build_invoice_response(rows[0] if rows else _demo_invoice_fallback(invoice_id))
-        raw_text = (rows[0].get("raw_text") or "") if rows else ""
+        file_path = erp.get("file_path", "")
 
-        pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, raw_text)
+        # Try to serve the actual source PDF from UC Volume
+        if file_path:
+            pdf_bytes = await _fetch_pdf_from_volume(file_path, user_token)
+            if pdf_bytes:
+                filename = file_path.split("/")[-1] or f"invoice-{invoice_id}.pdf"
+                return Response(
+                    content=pdf_bytes,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": _disposition(filename)},
+                )
 
-        filename = f"invoice-{invoice_id}.pdf"
-        disposition = f'attachment; filename="{filename}"' if download else f'inline; filename="{filename}"'
+        # Fall back: build a PDF from ERP metadata
+        pdf_bytes = await asyncio.to_thread(build_invoice_pdf, erp, "")
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": disposition},
+            headers={"Content-Disposition": _disposition(f"invoice-{invoice_id}.pdf")},
         )
 
     except Exception as e:

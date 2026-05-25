@@ -11,6 +11,7 @@ import MetricCard from "./MetricCard";
 import GreetingBanner from "./GreetingBanner";
 import ExceptionDrawer from "./ExceptionDrawer";
 import SummaryCard from "./SummaryCard";
+import TopSummaryCard from "./TopSummaryCard";
 import { inr, formatNum, agingColor } from "../utils";
 
 type O2CMetrics = {
@@ -99,6 +100,9 @@ export default function ARTab({ userName = "User", onNotify }: Props) {
 
   return (
     <div className="flex flex-col gap-4 h-full">
+      {/* Top LLM glance summary — uses live gold data + Claude */}
+      <TopSummaryCard tab="O2C" />
+
       {/* KPI Strip */}
       {m && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
